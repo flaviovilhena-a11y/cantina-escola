@@ -3,13 +3,13 @@ import pandas as pd
 from datetime import date
 
 # --- Configuração da Página (Nuvem/Navegador) ---
-st.set_page_config(page_title="Cantina Escola", layout="centered")
+st.set_page_config(page_title="Cantina Escolar", layout="centered")
 
 # --- Simulação de Banco de Dados (Session State) ---
 if 'logado' not in st.session_state:
     st.session_state['logado'] = False
 
-# Definição das colunas, agora incluindo Email e Telefones separados
+# Definição das colunas
 if 'db_alunos' not in st.session_state:
     st.session_state['db_alunos'] = pd.DataFrame(columns=[
         "NOME", "SÉRIE", "TURMA", "TURNO", 
@@ -18,7 +18,7 @@ if 'db_alunos' not in st.session_state:
 
 # --- Tela de Login ---
 def login_screen():
-    st.title("Bem-vindo à Cantina Escola")
+    st.title("Bem-vindo à Cantina Escolar")
     
     st.write("Por favor, faça o login para acessar o sistema.")
     usuario = st.text_input("Login")
@@ -75,7 +75,7 @@ def main_menu():
             opt_user = st.radio("Escolha uma ação:", 
                 ["IMPORTAR ALUNOS VIA CSV", "NOVO ALUNO", "ATUALIZAR ALUNO"])
 
-            # 1. IMPORTAR ALUNOS VIA CSV (AJUSTADO)
+            # 1. IMPORTAR ALUNOS VIA CSV (CORRIGIDO ENCODING)
             if opt_user == "IMPORTAR ALUNOS VIA CSV":
                 st.write("Selecione o arquivo CSV (Listagem de Alunos):")
                 st.write("O sistema detectará automaticamente nomes, emails e separará os telefones.")
@@ -84,15 +84,13 @@ def main_menu():
                 if st.button("ENVIAR"):
                     if uploaded_file is not None:
                         try:
-                            # Lê o arquivo usando ; como separador
-                            df_new = pd.read_csv(uploaded_file, sep=';')
+                            # AQUI ESTÁ A CORREÇÃO: encoding='latin1'
+                            df_new = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
                             
                             # TRATAMENTO DE TELEFONES
-                            # O código abaixo pega a coluna "Telefones" e quebra onde tiver " / "
                             if 'Telefones' in df_new.columns:
                                 split_tels = df_new['Telefones'].astype(str).str.split(' / ', expand=True)
                                 df_new['TELEFONE 1'] = split_tels[0]
-                                # Se houver mais de um telefone, pega o segundo
                                 if split_tels.shape[1] > 1:
                                     df_new['TELEFONE 2'] = split_tels[1]
                                 else:
@@ -101,7 +99,7 @@ def main_menu():
                                 df_new['TELEFONE 1'] = None
                                 df_new['TELEFONE 2'] = None
 
-                            # Renomeia as colunas do CSV para os nomes internos do App
+                            # Renomeia as colunas
                             df_new = df_new.rename(columns={
                                 'Aluno': 'NOME',
                                 'Data de Nascimento': 'NASCIMENTO',
@@ -109,7 +107,7 @@ def main_menu():
                                 'Turma': 'TURMA'
                             })
 
-                            # Conversão de Data (DD/MM/AAAA para Data do Python)
+                            # Conversão de Data
                             df_new['NASCIMENTO'] = pd.to_datetime(df_new['NASCIMENTO'], dayfirst=True, errors='coerce').dt.date
 
                             # Preenche colunas que não vieram no CSV
@@ -117,9 +115,8 @@ def main_menu():
                             df_new['TURNO'] = ''
                             df_new['SALDO'] = 0.00
 
-                            # Filtra apenas as colunas oficiais para evitar sujeira
+                            # Filtra e ordena
                             colunas_finais = ["NOME", "SÉRIE", "TURMA", "TURNO", "NASCIMENTO", "SALDO", "EMAIL", "TELEFONE 1", "TELEFONE 2"]
-                            # Garante que todas colunas existam (preenche com vazio se faltar alguma)
                             for col in colunas_finais:
                                 if col not in df_new.columns:
                                     df_new[col] = None
@@ -130,14 +127,13 @@ def main_menu():
                             st.session_state['db_alunos'] = pd.concat([st.session_state['db_alunos'], df_final], ignore_index=True)
                             
                             st.success(f"Importação realizada! {len(df_final)} alunos carregados.")
-                            st.dataframe(df_final.head()) # Mostra uma prévia
-
+                            
                         except Exception as e:
                             st.error(f"Falha na importação: {e}")
                     else:
                         st.warning("Por favor, selecione um arquivo.")
 
-            # 2. NOVO ALUNO (ATUALIZADO COM TELS)
+            # 2. NOVO ALUNO
             elif opt_user == "NOVO ALUNO":
                 with st.form("form_novo_aluno"):
                     st.write("Preencha os dados do aluno:")
@@ -155,67 +151,4 @@ def main_menu():
                     with col_save:
                         submitted = st.form_submit_button("SALVAR")
                     with col_cancel:
-                        cancelled = st.form_submit_button("CANCELAR")
-
-                    if submitted:
-                        novo_dado = pd.DataFrame([{
-                            "NOME": nome, "SÉRIE": serie, "TURMA": turma, 
-                            "TURNO": turno, "NASCIMENTO": nascimento, 
-                            "EMAIL": email, "TELEFONE 1": tel1, "TELEFONE 2": tel2,
-                            "SALDO": saldo
-                        }])
-                        st.session_state['db_alunos'] = pd.concat([st.session_state['db_alunos'], novo_dado], ignore_index=True)
-                        st.success("Aluno salvo com sucesso!")
-
-            # 3. ATUALIZAR ALUNO (ATUALIZADO)
-            elif opt_user == "ATUALIZAR ALUNO":
-                if st.session_state['db_alunos'].empty:
-                    st.warning("Não há alunos cadastrados para atualizar.")
-                else:
-                    lista_nomes = st.session_state['db_alunos']['NOME'].unique()
-                    aluno_selecionado = st.selectbox("Selecione o aluno:", lista_nomes)
-                    
-                    idx = st.session_state['db_alunos'].index[st.session_state['db_alunos']['NOME'] == aluno_selecionado][0]
-                    dados_atuais = st.session_state['db_alunos'].loc[idx]
-
-                    with st.form("form_atualiza_aluno"):
-                        new_nome = st.text_input("NOME", value=dados_atuais['NOME'])
-                        new_serie = st.text_input("SÉRIE", value=dados_atuais['SÉRIE'] if dados_atuais['SÉRIE'] else "")
-                        new_turma = st.text_input("TURMA", value=dados_atuais['TURMA'])
-                        
-                        # Tratamento para selectbox não quebrar se o turno for vazio
-                        turno_atual = dados_atuais['TURNO'] if dados_atuais['TURNO'] in ["Matutino", "Vespertino", "Integral"] else "Matutino"
-                        new_turno = st.selectbox("TURNO", ["Matutino", "Vespertino", "Integral"], 
-                                               index=["Matutino", "Vespertino", "Integral"].index(turno_atual))
-                        
-                        new_email = st.text_input("EMAIL", value=dados_atuais['EMAIL'] if dados_atuais['EMAIL'] else "")
-                        new_tel1 = st.text_input("TELEFONE 1", value=dados_atuais['TELEFONE 1'] if dados_atuais['TELEFONE 1'] else "")
-                        new_tel2 = st.text_input("TELEFONE 2", value=dados_atuais['TELEFONE 2'] if dados_atuais['TELEFONE 2'] else "")
-                        new_saldo = st.number_input("SALDO", value=float(dados_atuais['SALDO']))
-
-                        c_save, c_cancel = st.columns(2)
-                        save_upd = st.form_submit_button("SALVAR")
-                        cancel_upd = st.form_submit_button("CANCELAR")
-
-                        if save_upd:
-                            st.session_state['db_alunos'].at[idx, 'NOME'] = new_nome
-                            st.session_state['db_alunos'].at[idx, 'SÉRIE'] = new_serie
-                            st.session_state['db_alunos'].at[idx, 'TURMA'] = new_turma
-                            st.session_state['db_alunos'].at[idx, 'TURNO'] = new_turno
-                            st.session_state['db_alunos'].at[idx, 'EMAIL'] = new_email
-                            st.session_state['db_alunos'].at[idx, 'TELEFONE 1'] = new_tel1
-                            st.session_state['db_alunos'].at[idx, 'TELEFONE 2'] = new_tel2
-                            st.session_state['db_alunos'].at[idx, 'SALDO'] = new_saldo
-                            st.success("Dados atualizados!")
-
-    # Exibir tabela para conferência
-    if not st.session_state['db_alunos'].empty:
-        st.markdown("---")
-        with st.expander("Ver Base de Dados Completa (Admin)"):
-            st.dataframe(st.session_state['db_alunos'])
-
-# --- Controle de Fluxo ---
-if st.session_state['logado']:
-    main_menu()
-else:
-    login_screen()
+                        cancelled = st.form_submit
