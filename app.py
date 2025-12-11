@@ -3,7 +3,8 @@ import pandas as pd
 from datetime import date
 
 # --- Configuração da Página (Nuvem/Navegador) ---
-st.set_page_config(page_title="Cantina Escolar", layout="centered")
+# Título da aba do navegador alterado
+st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
 
 # --- Simulação de Banco de Dados (Session State) ---
 if 'logado' not in st.session_state:
@@ -18,7 +19,8 @@ if 'db_alunos' not in st.session_state:
 
 # --- Tela de Login ---
 def login_screen():
-    st.title("Bem-vindo à Cantina Escolar")
+    # Título principal alterado conforme solicitado
+    st.title("Cantina Escolar do Centro Educacional Peixinho Dourado")
     
     st.write("Por favor, faça o login para acessar o sistema.")
     usuario = st.text_input("Login")
@@ -75,7 +77,7 @@ def main_menu():
             opt_user = st.radio("Escolha uma ação:", 
                 ["IMPORTAR ALUNOS VIA CSV", "NOVO ALUNO", "ATUALIZAR ALUNO"])
 
-            # 1. IMPORTAR ALUNOS VIA CSV (CORRIGIDO ENCODING)
+            # 1. IMPORTAR ALUNOS VIA CSV
             if opt_user == "IMPORTAR ALUNOS VIA CSV":
                 st.write("Selecione o arquivo CSV (Listagem de Alunos):")
                 st.write("O sistema detectará automaticamente nomes, emails e separará os telefones.")
@@ -84,7 +86,7 @@ def main_menu():
                 if st.button("ENVIAR"):
                     if uploaded_file is not None:
                         try:
-                            # AQUI ESTÁ A CORREÇÃO: encoding='latin1'
+                            # Leitura com encoding 'latin1' para evitar erro de caracteres
                             df_new = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
                             
                             # TRATAMENTO DE TELEFONES
@@ -115,7 +117,7 @@ def main_menu():
                             df_new['TURNO'] = ''
                             df_new['SALDO'] = 0.00
 
-                            # Filtra e ordena
+                            # Filtra e ordena colunas
                             colunas_finais = ["NOME", "SÉRIE", "TURMA", "TURNO", "NASCIMENTO", "SALDO", "EMAIL", "TELEFONE 1", "TELEFONE 2"]
                             for col in colunas_finais:
                                 if col not in df_new.columns:
@@ -151,4 +153,66 @@ def main_menu():
                     with col_save:
                         submitted = st.form_submit_button("SALVAR")
                     with col_cancel:
-                        cancelled = st.form_submit
+                        cancelled = st.form_submit_button("CANCELAR")
+
+                    if submitted:
+                        novo_dado = pd.DataFrame([{
+                            "NOME": nome, "SÉRIE": serie, "TURMA": turma, 
+                            "TURNO": turno, "NASCIMENTO": nascimento, 
+                            "EMAIL": email, "TELEFONE 1": tel1, "TELEFONE 2": tel2,
+                            "SALDO": saldo
+                        }])
+                        st.session_state['db_alunos'] = pd.concat([st.session_state['db_alunos'], novo_dado], ignore_index=True)
+                        st.success("Aluno salvo com sucesso!")
+
+            # 3. ATUALIZAR ALUNO
+            elif opt_user == "ATUALIZAR ALUNO":
+                if st.session_state['db_alunos'].empty:
+                    st.warning("Não há alunos cadastrados para atualizar.")
+                else:
+                    lista_nomes = st.session_state['db_alunos']['NOME'].unique()
+                    aluno_selecionado = st.selectbox("Selecione o aluno:", lista_nomes)
+                    
+                    idx = st.session_state['db_alunos'].index[st.session_state['db_alunos']['NOME'] == aluno_selecionado][0]
+                    dados_atuais = st.session_state['db_alunos'].loc[idx]
+
+                    with st.form("form_atualiza_aluno"):
+                        new_nome = st.text_input("NOME", value=dados_atuais['NOME'])
+                        new_serie = st.text_input("SÉRIE", value=dados_atuais['SÉRIE'] if dados_atuais['SÉRIE'] else "")
+                        new_turma = st.text_input("TURMA", value=dados_atuais['TURMA'])
+                        
+                        turno_atual = dados_atuais['TURNO'] if dados_atuais['TURNO'] in ["Matutino", "Vespertino", "Integral"] else "Matutino"
+                        new_turno = st.selectbox("TURNO", ["Matutino", "Vespertino", "Integral"], 
+                                               index=["Matutino", "Vespertino", "Integral"].index(turno_atual))
+                        
+                        new_email = st.text_input("EMAIL", value=dados_atuais['EMAIL'] if dados_atuais['EMAIL'] else "")
+                        new_tel1 = st.text_input("TELEFONE 1", value=dados_atuais['TELEFONE 1'] if dados_atuais['TELEFONE 1'] else "")
+                        new_tel2 = st.text_input("TELEFONE 2", value=dados_atuais['TELEFONE 2'] if dados_atuais['TELEFONE 2'] else "")
+                        new_saldo = st.number_input("SALDO", value=float(dados_atuais['SALDO']))
+
+                        c_save, c_cancel = st.columns(2)
+                        save_upd = st.form_submit_button("SALVAR")
+                        cancel_upd = st.form_submit_button("CANCELAR")
+
+                        if save_upd:
+                            st.session_state['db_alunos'].at[idx, 'NOME'] = new_nome
+                            st.session_state['db_alunos'].at[idx, 'SÉRIE'] = new_serie
+                            st.session_state['db_alunos'].at[idx, 'TURMA'] = new_turma
+                            st.session_state['db_alunos'].at[idx, 'TURNO'] = new_turno
+                            st.session_state['db_alunos'].at[idx, 'EMAIL'] = new_email
+                            st.session_state['db_alunos'].at[idx, 'TELEFONE 1'] = new_tel1
+                            st.session_state['db_alunos'].at[idx, 'TELEFONE 2'] = new_tel2
+                            st.session_state['db_alunos'].at[idx, 'SALDO'] = new_saldo
+                            st.success("Dados atualizados!")
+
+    # Exibir tabela para conferência
+    if not st.session_state['db_alunos'].empty:
+        st.markdown("---")
+        with st.expander("Ver Base de Dados Completa (Admin)"):
+            st.dataframe(st.session_state['db_alunos'])
+
+# --- Controle de Fluxo ---
+if st.session_state['logado']:
+    main_menu()
+else:
+    login_screen()
