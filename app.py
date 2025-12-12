@@ -28,13 +28,12 @@ def init_db():
         )
     ''')
     
-    # Migração para garantir suporte a 3 telefones (caso banco antigo exista)
     try:
         c.execute("ALTER TABLE alunos ADD COLUMN telefone3 TEXT")
     except sqlite3.OperationalError:
         pass
 
-    # 2. NOVA TABELA DE ALIMENTOS
+    # 2. Tabela de ALIMENTOS
     c.execute('''
         CREATE TABLE IF NOT EXISTS alimentos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -54,11 +53,12 @@ def add_alimento_db(nome, valor):
     conn.commit()
     conn.close()
 
-def get_all_alimentos():
+def update_alimento_db(id_alimento, nome, valor):
     conn = sqlite3.connect('cantina.db')
-    df = pd.read_sql_query("SELECT * FROM alimentos", conn)
+    c = conn.cursor()
+    c.execute('UPDATE alimentos SET nome=?, valor=? WHERE id=?', (nome, valor, id_alimento))
+    conn.commit()
     conn.close()
-    return df
 
 def delete_alimento_db(id_alimento):
     conn = sqlite3.connect('cantina.db')
@@ -67,18 +67,22 @@ def delete_alimento_db(id_alimento):
     conn.commit()
     conn.close()
 
-# --- FUNÇÕES DE ALUNOS (Mantidas) ---
+def get_all_alimentos():
+    conn = sqlite3.connect('cantina.db')
+    df = pd.read_sql_query("SELECT * FROM alimentos", conn)
+    conn.close()
+    return df
+
+# --- FUNÇÕES DE ALUNOS ---
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
     conn = sqlite3.connect('cantina.db')
     c = conn.cursor()
 
-    # Verifica se aluno existe pelo NOME
     c.execute("SELECT id FROM alunos WHERE nome = ?", (nome,))
     data = c.fetchone()
     action = ""
 
     if data:
-        # Atualiza apenas contatos e turma
         c.execute('''
             UPDATE alunos
             SET turma=?, email=?, telefone1=?, telefone2=?, telefone3=?
@@ -86,7 +90,6 @@ def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, sald
         ''', (turma, email, tel1, tel2, tel3, nome))
         action = "atualizado"
     else:
-        # Insere novo
         c.execute('''
             INSERT INTO alunos (nome, serie, turma, turno, nascimento, email, telefone1, telefone2, telefone3, saldo)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -174,46 +177,67 @@ def main_menu():
                 st.session_state['submenu'] = 'alimentos'
 
         # ==========================================
-        #       SUBMENU ALIMENTOS (NOVO)
+        #       SUBMENU ALIMENTOS (ATUALIZADO)
         # ==========================================
         if st.session_state.get('submenu') == 'alimentos':
             st.info("Cadastro de Produtos / Cardápio")
             
-            # Formulário de Cadastro
-            with st.form("form_alimento"):
-                st.write("Adicionar Novo Item:")
-                col_n, col_v = st.columns([3, 1])
-                with col_n:
-                    nome_prod = st.text_input("Nome do Produto (ex: Salgado, Suco)")
-                with col_v:
-                    valor_prod = st.number_input("Valor (R$)", min_value=0.00, step=0.50, format="%.2f")
-                
-                if st.form_submit_button("CADASTRAR PRODUTO"):
-                    if nome_prod:
-                        add_alimento_db(nome_prod, valor_prod)
-                        st.success(f"{nome_prod} cadastrado por R$ {valor_prod:.2f}")
-                        st.rerun()
-                    else:
-                        st.warning("Digite o nome do produto.")
+            # --- 1. Adicionar Novo Item ---
+            with st.expander("➕ Adicionar Novo Item", expanded=False):
+                with st.form("form_novo_alimento"):
+                    col_n, col_v = st.columns([3, 1])
+                    with col_n:
+                        nome_prod = st.text_input("Nome do Produto (ex: Salgado)")
+                    with col_v:
+                        valor_prod = st.number_input("Valor (R$)", min_value=0.00, step=0.50, format="%.2f")
+                    
+                    if st.form_submit_button("CADASTRAR"):
+                        if nome_prod:
+                            add_alimento_db(nome_prod, valor_prod)
+                            st.success(f"{nome_prod} cadastrado!")
+                            st.rerun()
 
-            # Lista de Produtos Cadastrados
-            st.markdown("### Itens no Cardápio")
+            # --- 2. Editar/Excluir Itens ---
+            st.markdown("---")
+            st.subheader("Gerenciar Cardápio")
+            
             df_alimentos = get_all_alimentos()
             
             if not df_alimentos.empty:
-                # Exibe tabela bonitinha
-                st.dataframe(df_alimentos[['id', 'nome', 'valor']], hide_index=True, use_container_width=True)
+                # Cria lista formatada para o selectbox
+                df_alimentos['label'] = df_alimentos['id'].astype(str) + " - " + df_alimentos['nome'] + " (R$ " + df_alimentos['valor'].astype(str) + ")"
                 
-                # Opção de Excluir
-                st.markdown("#### Excluir Item")
-                lista_exclusao = df_alimentos['id'].astype(str) + " - " + df_alimentos['nome']
-                item_to_delete = st.selectbox("Selecione para excluir:", lista_exclusao)
+                escolha_alimento = st.selectbox("Selecione um item para EDITAR ou EXCLUIR:", df_alimentos['label'].unique())
                 
-                if st.button("EXCLUIR ITEM SELECIONADO"):
-                    id_del = int(item_to_delete.split(' - ')[0])
-                    delete_alimento_db(id_del)
-                    st.warning("Item removido do cardápio.")
-                    st.rerun()
+                # Pega os dados do item selecionado
+                id_sel_alimento = int(escolha_alimento.split(' - ')[0])
+                # Filtra o dataframe para pegar a linha correta
+                item_dados = df_alimentos[df_alimentos['id'] == id_sel_alimento].iloc[0]
+                
+                # Formulário de Edição
+                with st.form("form_editar_alimento"):
+                    col_ed_n, col_ed_v = st.columns([3, 1])
+                    with col_ed_n:
+                        novo_nome = st.text_input("Nome", value=item_dados['nome'])
+                    with col_ed_v:
+                        novo_valor = st.number_input("Valor (R$)", value=float(item_dados['valor']), step=0.50)
+                    
+                    c_upd, c_del = st.columns(2)
+                    with c_upd:
+                        if st.form_submit_button("💾 SALVAR ALTERAÇÕES"):
+                            update_alimento_db(id_sel_alimento, novo_nome, novo_valor)
+                            st.success("Item atualizado com sucesso!")
+                            st.rerun()
+                    with c_del:
+                        if st.form_submit_button("🗑️ EXCLUIR ITEM"):
+                            delete_alimento_db(id_sel_alimento)
+                            st.warning("Item removido do cardápio.")
+                            st.rerun()
+                
+                # Exibe a tabela completa abaixo
+                st.markdown("### Lista Completa")
+                st.dataframe(df_alimentos[['nome', 'valor']], hide_index=True, use_container_width=True)
+
             else:
                 st.info("Nenhum alimento cadastrado ainda.")
 
@@ -325,7 +349,7 @@ def main_menu():
                             st.success("Dados atualizados!")
                             st.rerun()
 
-    # Exibir tabela DEBUG (Opcional, pode remover depois)
+    # Exibir tabela DEBUG (Opcional)
     st.markdown("---")
     with st.expander("Ver Base de Dados (Admin)"):
         st.write("Alunos:")
