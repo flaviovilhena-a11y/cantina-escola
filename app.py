@@ -1,14 +1,18 @@
 import streamlit as st
 import pandas as pd
 import sqlite3
+import shutil
+import os
 from datetime import datetime
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
 
 # --- Configuração do Banco de Dados (SQLite) ---
+DB_FILE = 'cantina.db'
+
 def init_db():
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
     # 1. Tabela de ALUNOS
@@ -45,37 +49,40 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- FUNÇÕES DE ALIMENTOS ---
+# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS) ---
 def add_alimento_db(nome, valor):
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('INSERT INTO alimentos (nome, valor) VALUES (?, ?)', (nome, valor))
     conn.commit()
     conn.close()
 
 def update_alimento_db(id_alimento, nome, valor):
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('UPDATE alimentos SET nome=?, valor=? WHERE id=?', (nome, valor, id_alimento))
     conn.commit()
     conn.close()
 
 def delete_alimento_db(id_alimento):
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('DELETE FROM alimentos WHERE id=?', (id_alimento,))
     conn.commit()
     conn.close()
 
 def get_all_alimentos():
-    conn = sqlite3.connect('cantina.db')
-    df = pd.read_sql_query("SELECT * FROM alimentos", conn)
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        df = pd.read_sql_query("SELECT * FROM alimentos", conn)
+    except:
+        df = pd.DataFrame()
     conn.close()
     return df
 
-# --- FUNÇÕES DE ALUNOS ---
+# --- FUNÇÕES DE GERENCIAMENTO (ALUNOS) ---
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
 
     c.execute("SELECT id FROM alunos WHERE nome = ?", (nome,))
@@ -101,7 +108,7 @@ def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, sald
     return action
 
 def update_aluno_manual(id_aluno, nome, serie, turma, turno, email, tel1, tel2, tel3, saldo):
-    conn = sqlite3.connect('cantina.db')
+    conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute('''
         UPDATE alunos 
@@ -112,8 +119,11 @@ def update_aluno_manual(id_aluno, nome, serie, turma, turno, email, tel1, tel2, 
     conn.close()
 
 def get_all_alunos():
-    conn = sqlite3.connect('cantina.db')
-    df = pd.read_sql_query("SELECT * FROM alunos", conn)
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        df = pd.read_sql_query("SELECT * FROM alunos", conn)
+    except:
+        df = pd.DataFrame()
     conn.close()
     return df
 
@@ -142,11 +152,39 @@ def login_screen():
 
 # --- Menu Principal ---
 def main_menu():
+    # --- BARRA LATERAL (MENU + BACKUP) ---
     st.sidebar.title("Menu")
+    
+    # Seção de Backup
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("💾 Backup de Segurança")
+    st.sidebar.info("A nuvem gratuita pode limpar os dados ao reiniciar. Baixe seu backup regularmente!")
+    
+    # 1. Botão de Download (Salvar)
+    with open(DB_FILE, "rb") as fp:
+        btn = st.sidebar.download_button(
+            label="⬇️ BAIXAR DADOS (Backup)",
+            data=fp,
+            file_name="backup_cantina.db",
+            mime="application/x-sqlite3"
+        )
+    
+    # 2. Botão de Upload (Restaurar)
+    uploaded_db = st.sidebar.file_uploader("⬆️ RESTAURAR DADOS", type=["db", "sqlite", "sqlite3"])
+    if uploaded_db is not None:
+        if st.sidebar.button("CONFIRMAR RESTAURAÇÃO"):
+            with open(DB_FILE, "wb") as f:
+                f.write(uploaded_db.getbuffer())
+            st.sidebar.success("Banco de dados restaurado! A página irá recarregar.")
+            st.rerun()
+            
+    st.sidebar.markdown("---")
+    
     if st.sidebar.button("Sair"):
         st.session_state['logado'] = False
         st.rerun()
 
+    # --- ÁREA PRINCIPAL ---
     st.header("Painel Principal")
     st.write("Usuário logado: Administrador")
     
@@ -177,12 +215,12 @@ def main_menu():
                 st.session_state['submenu'] = 'alimentos'
 
         # ==========================================
-        #       SUBMENU ALIMENTOS (ATUALIZADO)
+        #       SUBMENU ALIMENTOS
         # ==========================================
         if st.session_state.get('submenu') == 'alimentos':
             st.info("Cadastro de Produtos / Cardápio")
             
-            # --- 1. Adicionar Novo Item ---
+            # Adicionar Novo
             with st.expander("➕ Adicionar Novo Item", expanded=False):
                 with st.form("form_novo_alimento"):
                     col_n, col_v = st.columns([3, 1])
@@ -197,24 +235,19 @@ def main_menu():
                             st.success(f"{nome_prod} cadastrado!")
                             st.rerun()
 
-            # --- 2. Editar/Excluir Itens ---
+            # Editar/Excluir
             st.markdown("---")
             st.subheader("Gerenciar Cardápio")
             
             df_alimentos = get_all_alimentos()
             
             if not df_alimentos.empty:
-                # Cria lista formatada para o selectbox
                 df_alimentos['label'] = df_alimentos['id'].astype(str) + " - " + df_alimentos['nome'] + " (R$ " + df_alimentos['valor'].astype(str) + ")"
                 
                 escolha_alimento = st.selectbox("Selecione um item para EDITAR ou EXCLUIR:", df_alimentos['label'].unique())
-                
-                # Pega os dados do item selecionado
                 id_sel_alimento = int(escolha_alimento.split(' - ')[0])
-                # Filtra o dataframe para pegar a linha correta
                 item_dados = df_alimentos[df_alimentos['id'] == id_sel_alimento].iloc[0]
                 
-                # Formulário de Edição
                 with st.form("form_editar_alimento"):
                     col_ed_n, col_ed_v = st.columns([3, 1])
                     with col_ed_n:
@@ -226,15 +259,14 @@ def main_menu():
                     with c_upd:
                         if st.form_submit_button("💾 SALVAR ALTERAÇÕES"):
                             update_alimento_db(id_sel_alimento, novo_nome, novo_valor)
-                            st.success("Item atualizado com sucesso!")
+                            st.success("Item atualizado!")
                             st.rerun()
                     with c_del:
                         if st.form_submit_button("🗑️ EXCLUIR ITEM"):
                             delete_alimento_db(id_sel_alimento)
-                            st.warning("Item removido do cardápio.")
+                            st.warning("Item removido.")
                             st.rerun()
                 
-                # Exibe a tabela completa abaixo
                 st.markdown("### Lista Completa")
                 st.dataframe(df_alimentos[['nome', 'valor']], hide_index=True, use_container_width=True)
 
@@ -242,7 +274,7 @@ def main_menu():
                 st.info("Nenhum alimento cadastrado ainda.")
 
         # ==========================================
-        #       SUBMENU USUÁRIO (MANTIDO)
+        #       SUBMENU USUÁRIO
         # ==========================================
         if st.session_state.get('submenu') == 'usuario':
             st.info("Gerenciamento de Usuários")
@@ -349,7 +381,7 @@ def main_menu():
                             st.success("Dados atualizados!")
                             st.rerun()
 
-    # Exibir tabela DEBUG (Opcional)
+    # DEBUG
     st.markdown("---")
     with st.expander("Ver Base de Dados (Admin)"):
         st.write("Alunos:")
@@ -357,8 +389,4 @@ def main_menu():
         st.write("Alimentos:")
         st.dataframe(get_all_alimentos())
 
-# --- Controle de Fluxo ---
-if st.session_state['logado']:
-    main_menu()
-else:
-    login_screen()
+#
