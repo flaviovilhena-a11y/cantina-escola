@@ -161,13 +161,16 @@ def main_menu():
     st.sidebar.info("A nuvem gratuita pode limpar os dados ao reiniciar. Baixe seu backup regularmente!")
     
     # 1. Botão de Download (Salvar)
-    with open(DB_FILE, "rb") as fp:
-        btn = st.sidebar.download_button(
-            label="⬇️ BAIXAR DADOS (Backup)",
-            data=fp,
-            file_name="backup_cantina.db",
-            mime="application/x-sqlite3"
-        )
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "rb") as fp:
+            btn = st.sidebar.download_button(
+                label="⬇️ BAIXAR DADOS (Backup)",
+                data=fp,
+                file_name="backup_cantina.db",
+                mime="application/x-sqlite3"
+            )
+    else:
+        st.sidebar.warning("Nenhum dado para baixar ainda.")
     
     # 2. Botão de Upload (Restaurar)
     uploaded_db = st.sidebar.file_uploader("⬆️ RESTAURAR DADOS", type=["db", "sqlite", "sqlite3"])
@@ -289,7 +292,11 @@ def main_menu():
                 if st.button("ENVIAR"):
                     if uploaded_file is not None:
                         try:
-                            df_new = pd.read_csv(uploaded_file, sep=';', encoding='latin1')
+                            # -----------------------------------------------------------------
+                            # CORREÇÃO: sep=None com engine='python' detecta se é ; ou ,
+                            # -----------------------------------------------------------------
+                            df_new = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='latin1')
+                            
                             novos, atualizados = 0, 0
                             progress_bar = st.progress(0)
                             total_rows = len(df_new)
