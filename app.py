@@ -227,7 +227,14 @@ def main_menu():
     if os.path.exists(DB_FILE): 
         with open(DB_FILE,"rb") as f: st.sidebar.download_button("⬇️ BAIXAR DADOS",f,"backup.db")
     up=st.sidebar.file_uploader("RESTORE",type=["db"]); 
-    if up and st.sidebar.button("OK"): open(DB_FILE,"wb").write(up.getbuffer()); st.experimental_rerun()
+    
+    # --- CORREÇÃO AQUI (st.experimental_rerun -> st.rerun) ---
+    if up and st.sidebar.button("OK"): 
+        with open(DB_FILE,"wb") as f: f.write(up.getbuffer())
+        st.success("Restaurado com sucesso!")
+        st.rerun()
+    # -----------------------------------------------------------
+
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
 
@@ -320,7 +327,7 @@ def main_menu():
                     pix = PixPayload(CHAVE_PIX_ESCOLA, NOME_BENEFICIARIO, CIDADE_BENEFICIARIO, v)
                     payload = pix.gerar_payload()
                     st.markdown("---")
-                    c_qr, c_txt = st.columns([1,2])
+                    c_qr, c_txt = st.columns([1, 2])
                     with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
                     with c_txt: st.code(payload); st.warning("Confira o comprovante.")
                     if st.button("✅ CONFIRMAR PIX"): registrar_recarga(id_a, v, "PIX (QR)"); st.success("Creditado!"); st.rerun()
