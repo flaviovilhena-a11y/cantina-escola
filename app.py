@@ -389,4 +389,8 @@ def main_menu():
         st.write("Alimentos:")
         st.dataframe(get_all_alimentos())
 
-#
+# --- Controle de Fluxo ---
+if st.session_state['logado']:
+    main_menu()
+else:
+    login_screen()
