@@ -45,7 +45,7 @@ def init_db():
         )
     ''')
 
-    # 3. Tabela de TRANSAÇÕES (NOVA - Para Histórico)
+    # 3. Tabela de TRANSAÇÕES
     c.execute('''
         CREATE TABLE IF NOT EXISTS transacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,7 +73,8 @@ def get_all_alunos():
 def get_alunos_por_turma(turma):
     conn = sqlite3.connect(DB_FILE)
     try:
-        df = pd.read_sql_query("SELECT * FROM alunos WHERE turma = ?", conn, params=(turma,))
+        # Ordena os alunos por nome dentro da turma
+        df = pd.read_sql_query("SELECT * FROM alunos WHERE turma = ? ORDER BY nome ASC", conn, params=(turma,))
     except:
         df = pd.DataFrame()
     conn.close()
@@ -85,7 +86,7 @@ def get_aluno_by_id(aluno_id):
     c.execute("SELECT * FROM alunos WHERE id = ?", (aluno_id,))
     data = c.fetchone()
     conn.close()
-    return data # Retorna tupla
+    return data
 
 def update_saldo_aluno(aluno_id, novo_saldo):
     conn = sqlite3.connect(DB_FILE)
@@ -103,7 +104,7 @@ def registrar_venda(aluno_id, itens_str, valor_total):
     conn.commit()
     conn.close()
 
-# --- Funções Alimentos e Upsert (Mantidas) ---
+# --- Funções Alimentos e Upsert ---
 def add_alimento_db(nome, valor):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -185,7 +186,6 @@ def main_menu():
     # --- BARRA LATERAL ---
     st.sidebar.title("Menu")
     
-    # Backup
     st.sidebar.markdown("---")
     st.sidebar.subheader("💾 Backup")
     if os.path.exists(DB_FILE):
@@ -219,9 +219,9 @@ def main_menu():
     with col2:
         if st.button("COMPRAR REFEIÇÃO", use_container_width=True):
             st.session_state['menu_atual'] = 'comprar'
-            st.session_state['modo_compra'] = None # Reset do modo
-            st.session_state['turma_selecionada'] = None # Reset da turma
-            st.session_state['aluno_compra_id'] = None # Reset do aluno em compra
+            st.session_state['modo_compra'] = None
+            st.session_state['turma_selecionada'] = None
+            st.session_state['aluno_compra_id'] = None
     with col3:
         btn_saldo = st.button("SALDO/HISTÓRICO", use_container_width=True)
     with col4:
@@ -278,9 +278,15 @@ def main_menu():
                 if up_csv and st.button("ENVIAR"):
                     try:
                         df = pd.read_csv(up_csv, sep=None, engine='python', encoding='latin1')
-                        # Limpeza Â
+                        
+                        # --- LIMPEZA DOS DADOS (NOVO) ---
+                        # Substitui Â por o E DEPOIS remove °
                         for col in df.select_dtypes(include=['object']):
+                            # Primeiro: Â -> o
                             df[col] = df[col].astype(str).str.replace('Â', 'o', regex=False)
+                            # Segundo: Remove o ° (grau)
+                            df[col] = df[col].astype(str).str.replace('°', '', regex=False)
+                        # --------------------------------
                         
                         novos, atua = 0, 0
                         bar = st.progress(0)
@@ -314,6 +320,8 @@ def main_menu():
             elif opt == "ATUALIZAR ALUNO":
                 df_al = get_all_alunos()
                 if not df_al.empty:
+                    # Ordena a lista de alunos
+                    df_al = df_al.sort_values(by='nome')
                     df_al['lbl'] = df_al['id'].astype(str) + " - " + df_al['nome']
                     sel = st.selectbox("Aluno:", df_al['lbl'].unique())
                     id_a = int(sel.split(' - ')[0])
@@ -334,7 +342,6 @@ def main_menu():
         st.markdown("---")
         st.subheader("🛒 Venda de Refeição")
 
-        # Se não escolheu modo ou turma, mostra botões iniciais
         if st.session_state.get('modo_compra') is None:
             c_aluno, c_turma = st.columns(2)
             with c_aluno:
@@ -344,7 +351,7 @@ def main_menu():
                 if st.button("🏫 BUSCA POR TURMA", use_container_width=True):
                     st.session_state['modo_compra'] = 'turma'
 
-        # --- MODO 1: BUSCA POR ALUNO (SIMPLES) ---
+        # --- MODO 1: ALUNO ---
         if st.session_state.get('modo_compra') == 'aluno':
             st.info("Modo: Venda Individual")
             if st.button("⬅️ Voltar"):
@@ -353,21 +360,18 @@ def main_menu():
             
             df_alunos = get_all_alunos()
             if not df_alunos.empty:
+                # Ordena lista global
+                df_alunos = df_alunos.sort_values(by='nome')
                 df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
                 aluno_sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
-                
-                # Identifica ID
                 idx = df_alunos[df_alunos['lbl'] == aluno_sel].iloc[0]['id']
-                
-                # --- FORMULÁRIO DE VENDA (REUTILIZÁVEL) ---
                 realizar_venda_form(idx)
             else:
                 st.warning("Nenhum aluno cadastrado.")
 
-        # --- MODO 2: BUSCA POR TURMA (LOOP) ---
+        # --- MODO 2: TURMA ---
         elif st.session_state.get('modo_compra') == 'turma':
             
-            # FASE 1: Selecionar a Turma (se ainda não selecionou)
             if st.session_state.get('turma_selecionada') is None:
                 st.info("Modo: Venda por Turma")
                 if st.button("⬅️ Voltar"):
@@ -376,7 +380,8 @@ def main_menu():
                 
                 df_alunos = get_all_alunos()
                 if not df_alunos.empty:
-                    turmas = sorted(df_alunos['turma'].dropna().unique())
+                    # ORDENAÇÃO CRESCENTE DAS TURMAS GARANTIDA AQUI
+                    turmas = sorted(df_alunos['turma'].dropna().astype(str).unique())
                     turma_escolhida = st.selectbox("Selecione a Turma:", turmas)
                     
                     if st.button("ABRIR TURMA"):
@@ -385,123 +390,84 @@ def main_menu():
                 else:
                     st.warning("Sem alunos cadastrados.")
 
-            # FASE 2: Lista de Alunos da Turma
             else:
                 turma_atual = st.session_state['turma_selecionada']
-                
-                # Header fixo da turma com botão de sair
                 c_head, c_btn = st.columns([3, 1])
-                with c_head:
-                    st.markdown(f"### 🏫 Turma: {turma_atual}")
+                with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
                 with c_btn:
                     if st.button("❌ ENCERRAR VENDAS DA TURMA", type="primary"):
                         st.session_state['turma_selecionada'] = None
                         st.session_state['aluno_compra_id'] = None
                         st.rerun()
                 
-                # Se não tem aluno selecionado para compra, mostra a lista
                 if st.session_state.get('aluno_compra_id') is None:
                     st.write("Selecione o aluno para iniciar a venda:")
-                    
                     df_turma = get_alunos_por_turma(turma_atual)
                     
-                    # Cria botões para cada aluno (Grade ou Lista)
-                    for index, row in df_turma.iterrows():
-                        # Exibe Saldo colorido
-                        cor_saldo = "red" if row['saldo'] < 0 else "green"
+                    # Cria grade de botões
+                    cols = st.columns(2)
+                    for i, (index, row) in enumerate(df_turma.iterrows()):
                         label_btn = f"{row['nome']} (R$ {row['saldo']:.2f})"
-                        
-                        if st.button(label_btn, key=f"btn_aluno_{row['id']}", use_container_width=True):
-                            st.session_state['aluno_compra_id'] = row['id']
-                            st.rerun()
-                
-                # FASE 3: Tela de Compra do Aluno Selecionado
+                        # Distribui entre 2 colunas
+                        with cols[i % 2]:
+                            if st.button(label_btn, key=f"btn_{row['id']}", use_container_width=True):
+                                st.session_state['aluno_compra_id'] = row['id']
+                                st.rerun()
                 else:
                     id_aluno_compra = st.session_state['aluno_compra_id']
-                    
-                    # Botão para cancelar apenas esta venda e voltar pra lista
                     if st.button("⬅️ Cancelar e voltar para lista"):
                         st.session_state['aluno_compra_id'] = None
                         st.rerun()
-                    
-                    # Chama o formulário de venda
-                    # Ao finalizar, ele precisa limpar 'aluno_compra_id' mas manter 'turma_selecionada'
                     realizar_venda_form(id_aluno_compra, modo_turma=True)
 
-
-# --- FUNÇÃO AUXILIAR: FORMULÁRIO DE VENDA ---
+# --- AUXILIAR VENDA ---
 def realizar_venda_form(aluno_id, modo_turma=False):
-    # Pega dados frescos do banco
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT * FROM alunos WHERE id = ?", (aluno_id,))
     aluno = c.fetchone() 
-    # aluno é tupla: (id, nome, serie, turma, turno, nasc, email, t1, t2, t3, saldo)
-    # saldo é índice 10, nome 1
     conn.close()
     
     saldo_atual = aluno[10]
     nome_aluno = aluno[1]
     
     st.markdown(f"""
-    <div style="padding:10px; border-radius:5px; background-color:#f0f2f6; border: 1px solid #d1d5db;">
-        <h4>👤 Aluno: {nome_aluno}</h4>
+    <div style="padding:10px; background-color:#f0f2f6; border-radius:5px;">
+        <h4>👤 {nome_aluno}</h4>
         <h2 style="color:{'green' if saldo_atual >=0 else 'red'}">Saldo: R$ {saldo_atual:.2f}</h2>
     </div>
     """, unsafe_allow_html=True)
     
     st.write("")
     st.write("📦 **Selecione os itens:**")
-    
     df_alimentos = get_all_alimentos()
     
     if df_alimentos.empty:
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    # Usando multiselect para escolher produtos
-    # Cria lista de opções "Nome - R$ Valor"
     opcoes = df_alimentos.apply(lambda x: f"{x['nome']} | R$ {x['valor']:.2f}", axis=1).tolist()
-    
     escolhas = st.multiselect("Itens:", options=opcoes)
     
     total_compra = 0.0
     itens_comprados = []
-    
     if escolhas:
         for item in escolhas:
-            # Extrai o valor da string
-            parte_valor = item.split('| R$ ')[1]
-            valor = float(parte_valor)
+            valor = float(item.split('| R$ ')[1])
             total_compra += valor
             itens_comprados.append(item.split(' |')[0])
             
-        st.markdown(f"### Total a pagar: R$ {total_compra:.2f}")
-        
-        saldo_final = saldo_atual - total_compra
-        st.write(f"Saldo após compra: R$ {saldo_final:.2f}")
+        st.markdown(f"### Total: R$ {total_compra:.2f}")
+        st.write(f"Saldo final: R$ {saldo_atual - total_compra:.2f}")
         
         if st.button("✅ CONFIRMAR COMPRA", type="primary", use_container_width=True):
-            # 1. Atualiza Saldo
-            update_saldo_aluno(aluno_id, saldo_final)
-            
-            # 2. Registra Histórico
-            itens_str = ", ".join(itens_comprados)
-            registrar_venda(aluno_id, itens_str, total_compra)
-            
-            st.success("Venda realizada com sucesso!")
-            
-            # Lógica de Retorno
-            if modo_turma:
-                # No modo turma, voltamos para a lista da turma
-                st.session_state['aluno_compra_id'] = None
-            else:
-                # No modo aluno, apenas recarregamos
-                pass
-            
+            update_saldo_aluno(aluno_id, saldo_atual - total_compra)
+            registrar_venda(aluno_id, ", ".join(itens_comprados), total_compra)
+            st.success("Venda realizada!")
+            if modo_turma: st.session_state['aluno_compra_id'] = None
             st.rerun()
 
-# --- Controle de Fluxo ---
+# --- RUN ---
 if st.session_state['logado']:
     main_menu()
 else:
