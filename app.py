@@ -160,10 +160,9 @@ def main_menu():
     st.sidebar.subheader("💾 Backup de Segurança")
     st.sidebar.info("A nuvem gratuita pode limpar os dados ao reiniciar. Baixe seu backup regularmente!")
     
-    # 1. Botão de Download (Salvar)
     if os.path.exists(DB_FILE):
         with open(DB_FILE, "rb") as fp:
-            btn = st.sidebar.download_button(
+            st.sidebar.download_button(
                 label="⬇️ BAIXAR DADOS (Backup)",
                 data=fp,
                 file_name="backup_cantina.db",
@@ -172,7 +171,6 @@ def main_menu():
     else:
         st.sidebar.warning("Nenhum dado para baixar ainda.")
     
-    # 2. Botão de Upload (Restaurar)
     uploaded_db = st.sidebar.file_uploader("⬆️ RESTAURAR DADOS", type=["db", "sqlite", "sqlite3"])
     if uploaded_db is not None:
         if st.sidebar.button("CONFIRMAR RESTAURAÇÃO"):
@@ -223,7 +221,6 @@ def main_menu():
         if st.session_state.get('submenu') == 'alimentos':
             st.info("Cadastro de Produtos / Cardápio")
             
-            # Adicionar Novo
             with st.expander("➕ Adicionar Novo Item", expanded=False):
                 with st.form("form_novo_alimento"):
                     col_n, col_v = st.columns([3, 1])
@@ -238,7 +235,6 @@ def main_menu():
                             st.success(f"{nome_prod} cadastrado!")
                             st.rerun()
 
-            # Editar/Excluir
             st.markdown("---")
             st.subheader("Gerenciar Cardápio")
             
@@ -272,7 +268,6 @@ def main_menu():
                 
                 st.markdown("### Lista Completa")
                 st.dataframe(df_alimentos[['nome', 'valor']], hide_index=True, use_container_width=True)
-
             else:
                 st.info("Nenhum alimento cadastrado ainda.")
 
@@ -286,17 +281,22 @@ def main_menu():
 
             if opt_user == "IMPORTAR ALUNOS VIA CSV":
                 st.write("Selecione o arquivo CSV:")
-                st.warning("Nota: Atualiza telefones/turma se aluno já existir. Mantém saldo.")
+                st.warning("Nota: Substitui automaticamente 'Â' por 'o'. Atualiza dados se aluno já existir.")
                 uploaded_file = st.file_uploader("Upload CSV", type=['csv'])
                 
                 if st.button("ENVIAR"):
                     if uploaded_file is not None:
                         try:
-                            # -----------------------------------------------------------------
-                            # CORREÇÃO: sep=None com engine='python' detecta se é ; ou ,
-                            # -----------------------------------------------------------------
+                            # 1. Leitura Inteligente do CSV
                             df_new = pd.read_csv(uploaded_file, sep=None, engine='python', encoding='latin1')
                             
+                            # 2. LIMPEZA AUTOMÁTICA (Substitui Â por o)
+                            # Aplica a substituição apenas nas colunas de texto (object)
+                            obj_cols = df_new.select_dtypes(include=['object']).columns
+                            for col in obj_cols:
+                                df_new[col] = df_new[col].astype(str).str.replace('Â', 'o', regex=False)
+                            
+                            # 3. Processamento Normal
                             novos, atualizados = 0, 0
                             progress_bar = st.progress(0)
                             total_rows = len(df_new)
