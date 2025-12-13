@@ -3,7 +3,7 @@ import pandas as pd
 import sqlite3
 import shutil
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import Counter
 
 # --- Configuração da Página ---
@@ -37,7 +37,7 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # 2. Tabela de ALIMENTOS (Com nova coluna TIPO)
+    # 2. Tabela de ALIMENTOS
     c.execute('''
         CREATE TABLE IF NOT EXISTS alimentos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -46,22 +46,29 @@ def init_db():
             tipo TEXT
         )
     ''')
-    
-    # Migração para adicionar coluna TIPO em bancos existentes
     try:
         c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT")
-        # Define padrão como ALIMENTO para itens antigos
         c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
     except sqlite3.OperationalError:
         pass
 
-    # 3. Tabela de TRANSAÇÕES
+    # 3. Tabela de TRANSAÇÕES (VENDAS)
     c.execute('''
         CREATE TABLE IF NOT EXISTS transacoes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             aluno_id INTEGER,
             itens TEXT,
             valor_total REAL,
+            data_hora TEXT
+        )
+    ''')
+
+    # 4. Tabela de RECARGAS (CRÉDITOS - NOVA)
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS recargas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            aluno_id INTEGER,
+            valor REAL,
             data_hora TEXT
         )
     ''')
@@ -146,7 +153,66 @@ def get_historico_preferencias(aluno_id):
                     continue
     return contador
 
-# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS - ATUALIZADAS COM TIPO) ---
+# --- FUNÇÃO DE EXTRATO UNIFICADO ---
+def get_extrato_aluno(aluno_id, dias_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    
+    # Define data de corte
+    data_corte = None
+    if dias_filtro != 'TODOS':
+        hoje = datetime.now()
+        delta = timedelta(days=int(dias_filtro))
+        data_corte = hoje - delta
+
+    # 1. Busca Vendas (Débitos)
+    q_vendas = "SELECT data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ?"
+    cursor = conn.cursor()
+    cursor.execute(q_vendas, (aluno_id,))
+    vendas = cursor.fetchall()
+    
+    # 2. Busca Recargas (Créditos)
+    q_recargas = "SELECT data_hora, valor FROM recargas WHERE aluno_id = ?"
+    cursor.execute(q_recargas, (aluno_id,))
+    recargas = cursor.fetchall()
+    conn.close()
+
+    extrato = []
+
+    # Processa Vendas
+    for v in vendas:
+        dt_obj = datetime.strptime(v[0], "%d/%m/%Y %H:%M:%S")
+        if data_corte and dt_obj < data_corte:
+            continue
+        extrato.append({
+            "Data": dt_obj,
+            "Tipo": "COMPRA",
+            "Descrição": v[1], # Itens
+            "Valor": -v[2] # Negativo
+        })
+
+    # Processa Recargas
+    for r in recargas:
+        dt_obj = datetime.strptime(r[0], "%d/%m/%Y %H:%M:%S")
+        if data_corte and dt_obj < data_corte:
+            continue
+        extrato.append({
+            "Data": dt_obj,
+            "Tipo": "RECARGA",
+            "Descrição": "Crédito inserido",
+            "Valor": r[1] # Positivo
+        })
+
+    # Cria DataFrame e Ordena
+    if extrato:
+        df = pd.DataFrame(extrato)
+        df = df.sort_values(by="Data", ascending=False)
+        # Formata Data para string bonita
+        df['Data'] = df['Data'].apply(lambda x: x.strftime("%d/%m/%Y %H:%M"))
+        return df
+    else:
+        return pd.DataFrame()
+
+# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS) ---
 def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -282,7 +348,9 @@ def main_menu():
             if 'aluno_compra_id' not in st.session_state: st.session_state['aluno_compra_id'] = None
             if 'resumo_turma' not in st.session_state: st.session_state['resumo_turma'] = False
     with col3:
-        btn_saldo = st.button("SALDO/HISTÓRICO", use_container_width=True)
+        if st.button("SALDO/HISTÓRICO", use_container_width=True):
+            st.session_state['menu_atual'] = 'historico'
+            st.session_state['hist_aluno_id'] = None
     with col4:
         btn_recarga = st.button("RECARGA", use_container_width=True)
 
@@ -305,7 +373,6 @@ def main_menu():
             st.markdown("---")
             df_ali = get_all_alimentos()
 
-            # --- NOVO ALIMENTO ---
             if acao_alim == "NOVO ALIMENTO":
                 st.write("📝 **Cadastrar Novo Item**")
                 with st.form("form_novo_alimento"):
@@ -316,12 +383,10 @@ def main_menu():
                         add_alimento_db(nome_p, valor_p, tipo_p)
                         st.success("Alimento cadastrado com sucesso!")
                         st.rerun()
-                
                 if not df_ali.empty:
                     st.write("Itens Cadastrados:")
                     st.dataframe(df_ali[['nome', 'valor', 'tipo']], hide_index=True)
 
-            # --- ALTERAR ALIMENTO ---
             elif acao_alim == "ALTERAR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -331,22 +396,17 @@ def main_menu():
                     esc_ali = st.selectbox("Selecione o Alimento:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
                     dados_ali = df_ali[df_ali['id'] == id_ali].iloc[0]
-                    
                     with st.form("form_alterar_ali"):
                         n_n = st.text_input("Nome", value=dados_ali['nome'])
                         n_v = st.number_input("Valor (R$)", value=float(dados_ali['valor']), step=0.50)
-                        
-                        # Recupera tipo atual ou define padrão
                         tipo_atual = dados_ali['tipo'] if 'tipo' in dados_ali and dados_ali['tipo'] in ["ALIMENTO", "BEBIDA"] else "ALIMENTO"
                         idx_tipo = ["ALIMENTO", "BEBIDA"].index(tipo_atual)
                         n_t = st.selectbox("Tipo do Produto", ["ALIMENTO", "BEBIDA"], index=idx_tipo)
-                        
                         if st.form_submit_button("SALVAR ALTERAÇÕES"):
                             update_alimento_db(id_ali, n_n, n_v, n_t)
                             st.success("Alimento atualizado!")
                             st.rerun()
 
-            # --- EXCLUIR ALIMENTO ---
             elif acao_alim == "EXCLUIR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -382,7 +442,6 @@ def main_menu():
                             df[col] = df[col].astype(str).str.replace('Ã³', 'ó', regex=False)
                             df[col] = df[col].astype(str).str.replace('Ã', 'í', regex=False)
                             df[col] = df[col].astype(str).str.replace('°', '', regex=False)
-                        
                         novos, atua = 0, 0
                         bar = st.progress(0)
                         for i, r in df.iterrows():
@@ -528,7 +587,6 @@ def main_menu():
                         total_dia = df_vendas['valor_total'].sum()
                         st.markdown(f"**Total da Turma Hoje: R$ {total_dia:.2f}**")
                     else: st.warning("Nenhuma venda registrada para esta turma hoje.")
-                    
                     st.markdown("---")
                     col_conf, col_canc = st.columns(2)
                     with col_conf:
@@ -554,13 +612,11 @@ def main_menu():
                     if st.session_state.get('aluno_compra_id') is None:
                         st.write("Selecione o aluno na lista abaixo:")
                         df_turma = get_alunos_por_turma(turma_atual)
-                        
                         h1, h2, h3 = st.columns([3, 1, 1])
                         h1.markdown("**Nome do Aluno**")
                         h2.markdown("**Saldo**")
                         h3.markdown("**Ação**")
                         st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
-                        
                         for index, row in df_turma.iterrows():
                             r1, r2, r3 = st.columns([3, 1, 1])
                             r1.write(f"{row['nome']}")
@@ -570,13 +626,85 @@ def main_menu():
                                 st.session_state['aluno_compra_id'] = row['id']
                                 st.rerun()
                             st.markdown("<hr style='margin: 5px 0px; border-top: 1px dotted #eee;'>", unsafe_allow_html=True)
-
                     else:
                         id_aluno_compra = st.session_state['aluno_compra_id']
                         if st.button("⬅️ Cancelar e voltar para lista"):
                             st.session_state['aluno_compra_id'] = None
                             st.rerun()
                         realizar_venda_form(id_aluno_compra, modo_turma=True)
+
+    # ==========================================
+    #       MENU: SALDO / HISTÓRICO
+    # ==========================================
+    if st.session_state.get('menu_atual') == 'historico':
+        st.markdown("---")
+        st.subheader("📜 Extrato e Histórico")
+
+        # Seleção de Aluno
+        if st.session_state.get('hist_aluno_id') is None:
+            df_alunos = get_all_alunos()
+            if not df_alunos.empty:
+                df_alunos = df_alunos.sort_values(by='nome')
+                df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
+                sel = st.selectbox("Selecione o Aluno para ver o Extrato:", df_alunos['lbl'].unique())
+                if st.button("VER SALDO E EXTRATO"):
+                    st.session_state['hist_aluno_id'] = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                    st.rerun()
+            else:
+                st.warning("Sem alunos cadastrados.")
+        else:
+            # EXIBIÇÃO DO EXTRATO
+            if st.button("⬅️ Trocar Aluno"):
+                st.session_state['hist_aluno_id'] = None
+                st.rerun()
+
+            # Pega dados do aluno
+            conn = sqlite3.connect(DB_FILE)
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT * FROM alunos WHERE id = ?", (st.session_state['hist_aluno_id'],))
+            aluno = c.fetchone()
+            conn.close()
+
+            # 1. MOSTRAR SALDO
+            cor_saldo = "green" if aluno['saldo'] >= 0 else "red"
+            st.markdown(f"""
+                <div style="padding: 20px; background-color: #f0f2f6; border-radius: 10px; text-align: center; margin-bottom: 20px;">
+                    <h3>Aluno: {aluno['nome']}</h3>
+                    <p style="font-size: 18px;">Saldo Atual em Conta</p>
+                    <h1 style="color: {cor_saldo}; font-size: 48px; margin: 0;">R$ {aluno['saldo']:.2f}</h1>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # 2. FILTROS
+            st.write("### Histórico de Movimentações")
+            filtro = st.selectbox("Período:", ["ÚLTIMOS 7 DIAS", "ÚLTIMOS 30 DIAS", "ÚLTIMOS 60 DIAS", "TODO O HISTÓRICO DISPONÍVEL"])
+            
+            mapa_dias = {
+                "ÚLTIMOS 7 DIAS": 7,
+                "ÚLTIMOS 30 DIAS": 30,
+                "ÚLTIMOS 60 DIAS": 60,
+                "TODO O HISTÓRICO DISPONÍVEL": "TODOS"
+            }
+            dias_selecionados = mapa_dias[filtro]
+
+            if st.button("EXIBIR HISTÓRICO", type="primary", use_container_width=True):
+                df_extrato = get_extrato_aluno(aluno['id'], dias_selecionados)
+                
+                if not df_extrato.empty:
+                    # Estilização da tabela (Colorir valores)
+                    def highlight_vals(val):
+                        color = 'red' if val < 0 else 'green'
+                        return f'color: {color}; font-weight: bold'
+
+                    st.dataframe(
+                        df_extrato.style.map(highlight_vals, subset=['Valor'])
+                                        .format({"Valor": "R$ {:.2f}"}),
+                        use_container_width=True,
+                        hide_index=True
+                    )
+                else:
+                    st.info("Nenhuma movimentação encontrada para este período.")
 
 # --- AUXILIAR VENDA (INTELIGENTE + SEPARADA POR TIPO) ---
 def realizar_venda_form(aluno_id, modo_turma=False):
@@ -615,17 +743,13 @@ def realizar_venda_form(aluno_id, modo_turma=False):
     df_alimentos = df_alimentos.sort_values(by=['freq', 'nome'], ascending=[False, True])
     
     # 3. SEPARAÇÃO BEBIDA / ALIMENTO
-    # Preenche vazios com 'ALIMENTO' por segurança
-    if 'tipo' not in df_alimentos.columns:
-        df_alimentos['tipo'] = 'ALIMENTO'
-    
+    if 'tipo' not in df_alimentos.columns: df_alimentos['tipo'] = 'ALIMENTO'
     df_bebidas = df_alimentos[df_alimentos['tipo'] == 'BEBIDA']
-    df_comidas = df_alimentos[df_alimentos['tipo'] != 'BEBIDA'] # Pega ALIMENTO e qualquer outro (segurança)
+    df_comidas = df_alimentos[df_alimentos['tipo'] != 'BEBIDA']
 
     with st.form("form_venda_final"):
         quantidades = {}
 
-        # --- SEÇÃO 1: BEBIDAS ---
         if not df_bebidas.empty:
             st.markdown("### 🥤 Bebidas")
             for index, row in df_bebidas.iterrows():
@@ -636,7 +760,6 @@ def realizar_venda_form(aluno_id, modo_turma=False):
                 quantidades[row['id']] = c3.number_input("Qtd", min_value=0, step=1, key=f"qtd_{row['id']}", label_visibility="collapsed")
                 st.markdown("<hr style='margin: 0px 0px 5px 0px; border-top: 1px dotted #ddd;'>", unsafe_allow_html=True)
 
-        # --- SEÇÃO 2: ALIMENTOS ---
         if not df_comidas.empty:
             st.markdown("### 🥪 Alimentos")
             for index, row in df_comidas.iterrows():
