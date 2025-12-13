@@ -79,14 +79,6 @@ def get_alunos_por_turma(turma):
     conn.close()
     return df
 
-def get_aluno_by_id(aluno_id):
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
-    c.execute("SELECT * FROM alunos WHERE id = ?", (aluno_id,))
-    data = c.fetchone()
-    conn.close()
-    return data
-
 def update_saldo_aluno(aluno_id, novo_saldo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -103,10 +95,8 @@ def registrar_venda(aluno_id, itens_str, valor_total):
     conn.commit()
     conn.close()
 
-# --- NOVA FUNÇÃO: RELATÓRIO DO DIA POR TURMA ---
 def get_vendas_hoje_turma(turma):
     conn = sqlite3.connect(DB_FILE)
-    # Pega a data de hoje para filtrar (ex: 13/12/2025)
     hoje = datetime.now().strftime("%d/%m/%Y")
     query = '''
         SELECT a.nome, t.itens, t.valor_total
@@ -202,7 +192,6 @@ def login_screen():
 
 # --- Menu Principal ---
 def main_menu():
-    # --- BARRA LATERAL ---
     st.sidebar.title("Menu")
     
     st.sidebar.markdown("---")
@@ -224,7 +213,6 @@ def main_menu():
         st.session_state['menu_atual'] = None
         st.rerun()
 
-    # --- HEADER ---
     st.header("Painel Principal")
     st.write("Usuário logado: fvilhena")
     
@@ -238,13 +226,10 @@ def main_menu():
     with col2:
         if st.button("COMPRAR REFEIÇÃO", use_container_width=True):
             st.session_state['menu_atual'] = 'comprar'
-            # Reseta variáveis de compra ao entrar
             if 'modo_compra' not in st.session_state: st.session_state['modo_compra'] = None
             if 'turma_selecionada' not in st.session_state: st.session_state['turma_selecionada'] = None
             if 'aluno_compra_id' not in st.session_state: st.session_state['aluno_compra_id'] = None
-            # Variável nova para o resumo
             if 'resumo_turma' not in st.session_state: st.session_state['resumo_turma'] = False
-
     with col3:
         btn_saldo = st.button("SALDO/HISTÓRICO", use_container_width=True)
     with col4:
@@ -262,7 +247,6 @@ def main_menu():
         with c2:
             if st.button("ALIMENTOS", use_container_width=True): st.session_state['submenu'] = 'alimentos'
 
-        # SUBMENU ALIMENTOS
         if st.session_state.get('submenu') == 'alimentos':
             st.info("Cadastro de Produtos / Cardápio")
             with st.expander("➕ Adicionar Novo Item"):
@@ -293,7 +277,6 @@ def main_menu():
                         delete_alimento_db(id_ali)
                         st.rerun()
 
-        # SUBMENU USUÁRIO
         if st.session_state.get('submenu') == 'usuario':
             opt = st.radio("Ação:", ["IMPORTAR CSV", "NOVO ALUNO", "ATUALIZAR ALUNO"])
             if opt == "IMPORTAR CSV":
@@ -301,8 +284,6 @@ def main_menu():
                 if up_csv and st.button("ENVIAR"):
                     try:
                         df = pd.read_csv(up_csv, sep=None, engine='python', encoding='latin1')
-                        
-                        # --- LIMPEZA DOS DADOS ---
                         for col in df.select_dtypes(include=['object']):
                             df[col] = df[col].astype(str).str.replace('1Â', '1o', regex=False)
                             df[col] = df[col].astype(str).str.replace('Ã¢', 'â', regex=False)
@@ -313,7 +294,6 @@ def main_menu():
                             df[col] = df[col].astype(str).str.replace('Ã³', 'ó', regex=False)
                             df[col] = df[col].astype(str).str.replace('Ã', 'í', regex=False)
                             df[col] = df[col].astype(str).str.replace('°', '', regex=False)
-                        # -------------------------
                         
                         novos, atua = 0, 0
                         bar = st.progress(0)
@@ -376,7 +356,7 @@ def main_menu():
             with c_turma:
                 if st.button("🏫 BUSCA POR TURMA", use_container_width=True):
                     st.session_state['modo_compra'] = 'turma'
-                    st.session_state['resumo_turma'] = False # Reset resumo
+                    st.session_state['resumo_turma'] = False
 
         # --- MODO 1: ALUNO ---
         if st.session_state.get('modo_compra') == 'aluno':
@@ -390,7 +370,8 @@ def main_menu():
                 df_alunos = df_alunos.sort_values(by='nome')
                 df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
                 aluno_sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
-                idx = df_alunos[df_alunos['lbl'] == aluno_sel].iloc[0]['id']
+                # CORREÇÃO CRÍTICA AQUI: Conversão para INT
+                idx = int(df_alunos[df_alunos['lbl'] == aluno_sel].iloc[0]['id'])
                 realizar_venda_form(idx)
             else:
                 st.warning("Nenhum aluno cadastrado.")
@@ -398,7 +379,6 @@ def main_menu():
         # --- MODO 2: TURMA ---
         elif st.session_state.get('modo_compra') == 'turma':
             
-            # FASE 0: SELEÇÃO DA TURMA
             if st.session_state.get('turma_selecionada') is None:
                 st.info("Modo: Venda por Turma")
                 if st.button("⬅️ Voltar"):
@@ -417,20 +397,16 @@ def main_menu():
                 else:
                     st.warning("Sem alunos cadastrados.")
 
-            # DENTRO DA TURMA
             else:
                 turma_atual = st.session_state['turma_selecionada']
                 
-                # --- VERIFICA SE ESTÁ NO MODO RESUMO (ENCERRAMENTO) ---
                 if st.session_state.get('resumo_turma'):
                     st.markdown(f"### 📋 Conferência: {turma_atual}")
                     st.info("Confira as vendas realizadas HOJE para esta turma antes de encerrar.")
                     
-                    # Pega vendas do dia
                     df_vendas = get_vendas_hoje_turma(turma_atual)
                     
                     if not df_vendas.empty:
-                        # Exibe dataframe limpo
                         st.dataframe(
                             df_vendas.rename(columns={'nome': 'Aluno', 'itens': 'Alimentos', 'valor_total': 'Valor (R$)'}),
                             hide_index=True,
@@ -446,7 +422,6 @@ def main_menu():
                     
                     with col_conf:
                         if st.button("✅ CONFIRMAR E FECHAR TURMA", type="primary"):
-                            # Limpa tudo e volta ao inicio
                             st.session_state['turma_selecionada'] = None
                             st.session_state['aluno_compra_id'] = None
                             st.session_state['resumo_turma'] = False
@@ -459,12 +434,10 @@ def main_menu():
                             st.session_state['resumo_turma'] = False
                             st.rerun()
 
-                # --- MODO VENDA NORMAL ---
                 else:
                     c_head, c_btn = st.columns([3, 1])
                     with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
                     with c_btn:
-                        # Botão alterado para ativar RESUMO
                         if st.button("🏁 ENCERRAR VENDAS DA TURMA", type="primary"):
                             st.session_state['resumo_turma'] = True
                             st.rerun()
@@ -487,16 +460,24 @@ def main_menu():
                             st.rerun()
                         realizar_venda_form(id_aluno_compra, modo_turma=True)
 
-# --- AUXILIAR VENDA (COM TABELA E QTD) ---
+# --- AUXILIAR VENDA (CORRIGIDA E BLINDADA) ---
 def realizar_venda_form(aluno_id, modo_turma=False):
     conn = sqlite3.connect(DB_FILE)
+    # CONFIGURAÇÃO CRÍTICA: Permite acessar colunas por nome
+    conn.row_factory = sqlite3.Row 
     c = conn.cursor()
     c.execute("SELECT * FROM alunos WHERE id = ?", (aluno_id,))
     aluno = c.fetchone() 
     conn.close()
     
-    saldo_atual = aluno[10]
-    nome_aluno = aluno[1]
+    # Proteção contra falhas de acesso
+    if not aluno:
+        st.error("Erro: Aluno não encontrado no banco de dados. Tente atualizar a página.")
+        return
+
+    # Acesso via Nome da Coluna (Mais Seguro)
+    saldo_atual = aluno['saldo']
+    nome_aluno = aluno['nome']
     
     st.markdown(f"""
     <div style="padding:10px; background-color:#f0f2f6; border-radius:5px;">
@@ -513,7 +494,6 @@ def realizar_venda_form(aluno_id, modo_turma=False):
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    # TABELA DE ITENS COM QTD
     with st.form("form_venda_final"):
         col_header = st.columns([3, 1, 1])
         col_header[0].write("**Produto**")
