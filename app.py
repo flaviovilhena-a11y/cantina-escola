@@ -4,6 +4,7 @@ import sqlite3
 import shutil
 import os
 import binascii
+import time 
 from datetime import datetime, timedelta
 from collections import Counter
 
@@ -224,16 +225,22 @@ def login_screen():
 
 def main_menu():
     st.sidebar.title("Menu"); st.sidebar.subheader("💾 Backup")
+    
+    # --- ÁREA DE BACKUP ATUALIZADA ---
     if os.path.exists(DB_FILE): 
         with open(DB_FILE,"rb") as f: st.sidebar.download_button("⬇️ BAIXAR DADOS",f,"backup.db")
-    up=st.sidebar.file_uploader("RESTORE",type=["db"]); 
     
-    # --- CORREÇÃO AQUI (st.experimental_rerun -> st.rerun) ---
-    if up and st.sidebar.button("OK"): 
-        with open(DB_FILE,"wb") as f: f.write(up.getbuffer())
-        st.success("Restaurado com sucesso!")
-        st.rerun()
-    # -----------------------------------------------------------
+    up = st.sidebar.file_uploader("RESTORE", type=["db"])
+    if up and st.sidebar.button("CONFIRMAR IMPORTAÇÃO DE DADOS"):
+        try:
+            with open(DB_FILE, "wb") as f:
+                f.write(up.getbuffer())
+            st.sidebar.success("✅ Dados importados com sucesso! Reiniciando...")
+            time.sleep(2)
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"❌ Erro ao importar: {e}")
+    # ----------------------------------
 
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
