@@ -63,15 +63,22 @@ def init_db():
         )
     ''')
 
-    # 4. Tabela de RECARGAS (CRÉDITOS - NOVA)
+    # 4. Tabela de RECARGAS (CRÉDITOS)
     c.execute('''
         CREATE TABLE IF NOT EXISTS recargas (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             aluno_id INTEGER,
             valor REAL,
-            data_hora TEXT
+            data_hora TEXT,
+            metodo_pagamento TEXT
         )
     ''')
+    
+    # Migração para garantir coluna metodo_pagamento
+    try:
+        c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -109,6 +116,27 @@ def registrar_venda(aluno_id, itens_str, valor_total):
     data_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     c.execute("INSERT INTO transacoes (aluno_id, itens, valor_total, data_hora) VALUES (?, ?, ?, ?)",
               (aluno_id, itens_str, valor_total, data_hora))
+    conn.commit()
+    conn.close()
+
+# --- NOVA FUNÇÃO: REGISTRAR RECARGA ---
+def registrar_recarga(aluno_id, valor, metodo):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    data_hora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    
+    # 1. Registra no histórico de recargas
+    c.execute("INSERT INTO recargas (aluno_id, valor, data_hora, metodo_pagamento) VALUES (?, ?, ?, ?)",
+              (aluno_id, valor, data_hora, metodo))
+    
+    # 2. Atualiza o saldo do aluno (Crédito)
+    # Busca saldo atual primeiro para garantir
+    c.execute("SELECT saldo FROM alunos WHERE id = ?", (aluno_id,))
+    saldo_atual = c.fetchone()[0]
+    novo_saldo = saldo_atual + valor
+    
+    c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (novo_saldo, aluno_id))
+    
     conn.commit()
     conn.close()
 
@@ -157,21 +185,20 @@ def get_historico_preferencias(aluno_id):
 def get_extrato_aluno(aluno_id, dias_filtro):
     conn = sqlite3.connect(DB_FILE)
     
-    # Define data de corte
     data_corte = None
     if dias_filtro != 'TODOS':
         hoje = datetime.now()
         delta = timedelta(days=int(dias_filtro))
         data_corte = hoje - delta
 
-    # 1. Busca Vendas (Débitos)
+    # 1. Busca Vendas
     q_vendas = "SELECT data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ?"
     cursor = conn.cursor()
     cursor.execute(q_vendas, (aluno_id,))
     vendas = cursor.fetchall()
     
-    # 2. Busca Recargas (Créditos)
-    q_recargas = "SELECT data_hora, valor FROM recargas WHERE aluno_id = ?"
+    # 2. Busca Recargas (Agora com Metodo)
+    q_recargas = "SELECT data_hora, valor, metodo_pagamento FROM recargas WHERE aluno_id = ?"
     cursor.execute(q_recargas, (aluno_id,))
     recargas = cursor.fetchall()
     conn.close()
@@ -186,7 +213,7 @@ def get_extrato_aluno(aluno_id, dias_filtro):
         extrato.append({
             "Data": dt_obj,
             "Tipo": "COMPRA",
-            "Descrição": v[1], # Itens
+            "Descrição": v[1],
             "Valor": -v[2] # Negativo
         })
 
@@ -195,24 +222,23 @@ def get_extrato_aluno(aluno_id, dias_filtro):
         dt_obj = datetime.strptime(r[0], "%d/%m/%Y %H:%M:%S")
         if data_corte and dt_obj < data_corte:
             continue
+        metodo = r[2] if r[2] else "Crédito"
         extrato.append({
             "Data": dt_obj,
             "Tipo": "RECARGA",
-            "Descrição": "Crédito inserido",
+            "Descrição": f"Recarga via {metodo}",
             "Valor": r[1] # Positivo
         })
 
-    # Cria DataFrame e Ordena
     if extrato:
         df = pd.DataFrame(extrato)
         df = df.sort_values(by="Data", ascending=False)
-        # Formata Data para string bonita
         df['Data'] = df['Data'].apply(lambda x: x.strftime("%d/%m/%Y %H:%M"))
         return df
     else:
         return pd.DataFrame()
 
-# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS) ---
+# --- FUNÇÕES ALIMENTOS E ALUNOS (CADASTRO) ---
 def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -243,7 +269,6 @@ def get_all_alimentos():
     conn.close()
     return df
 
-# --- FUNÇÕES DE GERENCIAMENTO (ALUNOS) ---
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -352,7 +377,9 @@ def main_menu():
             st.session_state['menu_atual'] = 'historico'
             st.session_state['hist_aluno_id'] = None
     with col4:
-        btn_recarga = st.button("RECARGA", use_container_width=True)
+        if st.button("RECARGA", use_container_width=True):
+            st.session_state['menu_atual'] = 'recarga'
+            st.session_state['modo_recarga'] = None # 'manual' ou 'pix'
 
     # ==========================================
     #       MENU: CADASTRO
@@ -381,7 +408,7 @@ def main_menu():
                     tipo_p = st.selectbox("Tipo do Produto", ["ALIMENTO", "BEBIDA"])
                     if st.form_submit_button("CADASTRAR"):
                         add_alimento_db(nome_p, valor_p, tipo_p)
-                        st.success("Alimento cadastrado com sucesso!")
+                        st.success("Cadastrado!")
                         st.rerun()
                 if not df_ali.empty:
                     st.write("Itens Cadastrados:")
@@ -389,11 +416,11 @@ def main_menu():
 
             elif acao_alim == "ALTERAR ALIMENTO":
                 if df_ali.empty:
-                    st.warning("Nenhum alimento cadastrado.")
+                    st.warning("Sem alimentos.")
                 else:
-                    st.write("✏️ **Editar Item Existente**")
+                    st.write("✏️ **Editar Item**")
                     df_ali['label'] = df_ali['id'].astype(str) + " - " + df_ali['nome'] + " (R$ " + df_ali['valor'].astype(str) + ")"
-                    esc_ali = st.selectbox("Selecione o Alimento:", df_ali['label'].unique())
+                    esc_ali = st.selectbox("Selecione:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
                     dados_ali = df_ali[df_ali['id'] == id_ali].iloc[0]
                     with st.form("form_alterar_ali"):
@@ -401,23 +428,23 @@ def main_menu():
                         n_v = st.number_input("Valor (R$)", value=float(dados_ali['valor']), step=0.50)
                         tipo_atual = dados_ali['tipo'] if 'tipo' in dados_ali and dados_ali['tipo'] in ["ALIMENTO", "BEBIDA"] else "ALIMENTO"
                         idx_tipo = ["ALIMENTO", "BEBIDA"].index(tipo_atual)
-                        n_t = st.selectbox("Tipo do Produto", ["ALIMENTO", "BEBIDA"], index=idx_tipo)
-                        if st.form_submit_button("SALVAR ALTERAÇÕES"):
+                        n_t = st.selectbox("Tipo", ["ALIMENTO", "BEBIDA"], index=idx_tipo)
+                        if st.form_submit_button("SALVAR"):
                             update_alimento_db(id_ali, n_n, n_v, n_t)
-                            st.success("Alimento atualizado!")
+                            st.success("Atualizado!")
                             st.rerun()
 
             elif acao_alim == "EXCLUIR ALIMENTO":
                 if df_ali.empty:
-                    st.warning("Nenhum alimento cadastrado.")
+                    st.warning("Sem alimentos.")
                 else:
-                    st.write("🗑️ **Remover Item do Cardápio**")
+                    st.write("🗑️ **Remover Item**")
                     df_ali['label'] = df_ali['id'].astype(str) + " - " + df_ali['nome']
                     esc_ali = st.selectbox("Selecione para EXCLUIR:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
                     if st.button("❌ CONFIRMAR EXCLUSÃO"):
                         delete_alimento_db(id_ali)
-                        st.success("Alimento removido com sucesso!")
+                        st.success("Removido!")
                         st.rerun()
 
         # SUBMENU USUÁRIO
@@ -470,7 +497,7 @@ def main_menu():
                     sl = st.number_input("Saldo Inicial", value=0.0)
                     if st.form_submit_button("SALVAR"):
                         upsert_aluno(nm, '', tr, '', None, '', None, None, None, sl)
-                        st.success("Aluno salvo!")
+                        st.success("Salvo!")
 
             elif opt == "ATUALIZAR ALUNO":
                 st.write("✏️ **Editar Cadastro**")
@@ -497,29 +524,97 @@ def main_menu():
                 if not df_al.empty:
                     df_al = df_al.sort_values(by='nome')
                     df_al['lbl'] = df_al['nome'] + " | " + df_al['turma'].astype(str) + " (ID: " + df_al['id'].astype(str) + ")"
-                    sel_del = st.selectbox("Selecione o aluno para excluir:", df_al['lbl'].unique())
+                    sel_del = st.selectbox("Selecione o aluno:", df_al['lbl'].unique())
                     id_del = int(sel_del.split('(ID: ')[1].replace(')', ''))
-                    st.error("Atenção: Esta ação não pode ser desfeita.")
-                    if st.button(f"❌ CONFIRMAR EXCLUSÃO DO ALUNO"):
+                    st.error("Atenção: Ação irreversível.")
+                    if st.button(f"❌ CONFIRMAR EXCLUSÃO"):
                         delete_aluno_db(id_del)
-                        st.success("Aluno excluído.")
+                        st.success("Excluído.")
                         st.rerun()
-                else: st.warning("Sem alunos cadastrados.")
+                else: st.warning("Sem alunos.")
 
             elif opt == "EXCLUIR TURMA":
                 st.write("🔥 **Excluir Turma Inteira**")
                 df_al = get_all_alunos()
                 if not df_al.empty:
                     turmas = sorted(df_al['turma'].dropna().astype(str).unique())
-                    turma_del = st.selectbox("Selecione a Turma para APAGAR:", turmas)
-                    qtd_alunos = len(df_al[df_al['turma'] == turma_del])
-                    st.warning(f"⚠️ CUIDADO: Você está prestes a apagar a turma '{turma_del}' inteira.")
-                    st.write(f"Isso removerá **{qtd_alunos} alunos** do sistema.")
-                    if st.button("🧨 APAGAR TODOS OS ALUNOS DA TURMA"):
+                    turma_del = st.selectbox("Selecione a Turma:", turmas)
+                    qtd = len(df_al[df_al['turma'] == turma_del])
+                    st.warning(f"Isso removerá **{qtd} alunos**.")
+                    if st.button("🧨 APAGAR TURMA"):
                         count = delete_turma_db(turma_del)
-                        st.success(f"Operação realizada. {count} alunos removidos.")
+                        st.success(f"{count} alunos removidos.")
                         st.rerun()
-                else: st.warning("Sem turmas cadastradas.")
+                else: st.warning("Sem turmas.")
+
+    # ==========================================
+    #       MENU: RECARGA (NOVO)
+    # ==========================================
+    if st.session_state.get('menu_atual') == 'recarga':
+        st.markdown("---")
+        st.subheader("💰 Recarga de Créditos")
+
+        c_man, c_pix = st.columns(2)
+        with c_man:
+            if st.button("📝 MANUAL (Dinheiro/Cartão)", use_container_width=True):
+                st.session_state['modo_recarga'] = 'manual'
+        with c_pix:
+            if st.button("💠 PIX (QR CODE)", use_container_width=True):
+                st.session_state['modo_recarga'] = 'pix'
+
+        # --- MODO MANUAL ---
+        if st.session_state.get('modo_recarga') == 'manual':
+            st.info("Modo: Recarga Manual")
+            df_alunos = get_all_alunos()
+            if not df_alunos.empty:
+                df_alunos = df_alunos.sort_values(by='nome')
+                df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
+                aluno_sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                
+                # Extrai ID
+                id_aluno = int(df_alunos[df_alunos['lbl'] == aluno_sel].iloc[0]['id'])
+                
+                with st.form("form_recarga_manual"):
+                    val_recarga = st.number_input("Valor da Recarga (R$)", min_value=0.0, step=5.0)
+                    metodo = st.selectbox("Forma de Pagamento", ["DINHEIRO", "PIX", "CARTÃO DE CRÉDITO", "CARTÃO DE DÉBITO"])
+                    
+                    if st.form_submit_button("✅ CONFIRMAR RECARGA"):
+                        if val_recarga > 0:
+                            registrar_recarga(id_aluno, val_recarga, metodo)
+                            st.success(f"Recarga de R$ {val_recarga:.2f} realizada com sucesso!")
+                        else:
+                            st.warning("O valor deve ser maior que zero.")
+            else:
+                st.warning("Nenhum aluno cadastrado.")
+
+        # --- MODO PIX (QR CODE) ---
+        elif st.session_state.get('modo_recarga') == 'pix':
+            st.info("Modo: Pix QR Code")
+            df_alunos = get_all_alunos()
+            if not df_alunos.empty:
+                df_alunos = df_alunos.sort_values(by='nome')
+                df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
+                aluno_sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                id_aluno = int(df_alunos[df_alunos['lbl'] == aluno_sel].iloc[0]['id'])
+                
+                val_pix = st.number_input("Valor a pagar (R$)", min_value=0.0, step=5.0)
+                
+                if val_pix > 0:
+                    # Simulação de QR Code
+                    st.markdown("### Escaneie para pagar:")
+                    # Utiliza API do Google Charts para gerar QR visualmente (Apenas visual, sem integração bancária real)
+                    # Você pode colocar sua chave pix aqui
+                    chave_pix = "sua_chave_pix_aqui" 
+                    qr_data = f"00020126330014BR.GOV.BCB.PIX0111{chave_pix}520400005303986540{val_pix:.2f}5802BR5913CANTINA6006MANAUS62070503***6304"
+                    
+                    st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=PagamentoCantinaValor{val_pix}", caption="QR Code Ilustrativo")
+                    st.write(f"Valor: **R$ {val_pix:.2f}**")
+                    
+                    if st.button("✅ CONFIRMAR RECEBIMENTO (PIX)"):
+                        registrar_recarga(id_aluno, val_pix, "PIX (QR)")
+                        st.success(f"Pagamento Pix de R$ {val_pix:.2f} confirmado!")
+            else:
+                st.warning("Nenhum aluno cadastrado.")
 
     # ==========================================
     #       MENU: COMPRAR REFEIÇÃO
@@ -653,12 +748,10 @@ def main_menu():
             else:
                 st.warning("Sem alunos cadastrados.")
         else:
-            # EXIBIÇÃO DO EXTRATO
             if st.button("⬅️ Trocar Aluno"):
                 st.session_state['hist_aluno_id'] = None
                 st.rerun()
 
-            # Pega dados do aluno
             conn = sqlite3.connect(DB_FILE)
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
@@ -666,7 +759,6 @@ def main_menu():
             aluno = c.fetchone()
             conn.close()
 
-            # 1. MOSTRAR SALDO
             cor_saldo = "green" if aluno['saldo'] >= 0 else "red"
             st.markdown(f"""
                 <div style="padding: 20px; background-color: #f0f2f6; border-radius: 10px; text-align: center; margin-bottom: 20px;">
@@ -676,7 +768,6 @@ def main_menu():
                 </div>
             """, unsafe_allow_html=True)
 
-            # 2. FILTROS
             st.write("### Histórico de Movimentações")
             filtro = st.selectbox("Período:", ["ÚLTIMOS 7 DIAS", "ÚLTIMOS 30 DIAS", "ÚLTIMOS 60 DIAS", "TODO O HISTÓRICO DISPONÍVEL"])
             
@@ -692,7 +783,6 @@ def main_menu():
                 df_extrato = get_extrato_aluno(aluno['id'], dias_selecionados)
                 
                 if not df_extrato.empty:
-                    # Estilização da tabela (Colorir valores)
                     def highlight_vals(val):
                         color = 'red' if val < 0 else 'green'
                         return f'color: {color}; font-weight: bold'
@@ -735,14 +825,10 @@ def realizar_venda_form(aluno_id, modo_turma=False):
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    # 1. Inteligência: Pega histórico
     freq_dict = get_historico_preferencias(aluno_id)
     df_alimentos['freq'] = df_alimentos['nome'].map(freq_dict).fillna(0)
-    
-    # 2. Ordena (Mais frequentes primeiro, depois Alfabético)
     df_alimentos = df_alimentos.sort_values(by=['freq', 'nome'], ascending=[False, True])
     
-    # 3. SEPARAÇÃO BEBIDA / ALIMENTO
     if 'tipo' not in df_alimentos.columns: df_alimentos['tipo'] = 'ALIMENTO'
     df_bebidas = df_alimentos[df_alimentos['tipo'] == 'BEBIDA']
     df_comidas = df_alimentos[df_alimentos['tipo'] != 'BEBIDA']
