@@ -167,13 +167,12 @@ init_db()
 if 'logado' not in st.session_state:
     st.session_state['logado'] = False
 
-# --- Tela de Login (MODIFICADA: SEM SENHA) ---
+# --- Tela de Login ---
 def login_screen():
     st.title("Cantina Escolar do Centro Educacional Peixinho Dourado")
     st.write("Acesso ao Sistema")
     
     usuario = st.text_input("Login")
-    # Senha removida temporariamente
     
     if st.button("Entrar"):
         if usuario == "fvilhena":
@@ -280,11 +279,22 @@ def main_menu():
                     try:
                         df = pd.read_csv(up_csv, sep=None, engine='python', encoding='latin1')
                         
-                        # --- LIMPEZA DOS DADOS ---
+                        # --- LIMPEZA DE CARACTERES ESTRANHOS ---
+                        # Corrige nomes como VenÃ¢ncio (â) e AraÃºjo (ú)
                         for col in df.select_dtypes(include=['object']):
-                            df[col] = df[col].astype(str).str.replace('Â', 'o', regex=False)
+                            # 1. Â -> o (para 1º ano)
+                            df[col] = df[col].astype(str).str.replace('1Â', '1o', regex=False)
+                            # 2. Corrige UTF-8 mal interpretado (Mojibake)
+                            df[col] = df[col].astype(str).str.replace('Ã¢', 'â', regex=False) # ex: Venâncio
+                            df[col] = df[col].astype(str).str.replace('Ãº', 'ú', regex=False) # ex: Araújo
+                            df[col] = df[col].astype(str).str.replace('Ã£', 'ã', regex=False) # ex: Irmão
+                            df[col] = df[col].astype(str).str.replace('Ã©', 'é', regex=False) # ex: José
+                            df[col] = df[col].astype(str).str.replace('Ã¡', 'á', regex=False) 
+                            df[col] = df[col].astype(str).str.replace('Ã³', 'ó', regex=False)
+                            df[col] = df[col].astype(str).str.replace('Ã', 'í', regex=False)  # as vezes í aparece só como Ã
+                            # 3. Limpeza final do grau
                             df[col] = df[col].astype(str).str.replace('°', '', regex=False)
-                        # -------------------------
+                        # ----------------------------------------
                         
                         novos, atua = 0, 0
                         bar = st.progress(0)
@@ -413,7 +423,7 @@ def main_menu():
                         st.rerun()
                     realizar_venda_form(id_aluno_compra, modo_turma=True)
 
-# --- AUXILIAR VENDA ---
+# --- AUXILIAR VENDA (ATUALIZADA: TABELA COM QUANTIDADE) ---
 def realizar_venda_form(aluno_id, modo_turma=False):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -432,33 +442,65 @@ def realizar_venda_form(aluno_id, modo_turma=False):
     """, unsafe_allow_html=True)
     
     st.write("")
-    st.write("📦 **Selecione os itens:**")
+    st.write("📦 **Selecione os itens e quantidades:**")
     df_alimentos = get_all_alimentos()
     
     if df_alimentos.empty:
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    opcoes = df_alimentos.apply(lambda x: f"{x['nome']} | R$ {x['valor']:.2f}", axis=1).tolist()
-    escolhas = st.multiselect("Itens:", options=opcoes)
-    
-    total_compra = 0.0
-    itens_comprados = []
-    if escolhas:
-        for item in escolhas:
-            valor = float(item.split('| R$ ')[1])
-            total_compra += valor
-            itens_comprados.append(item.split(' |')[0])
-            
-        st.markdown(f"### Total: R$ {total_compra:.2f}")
-        st.write(f"Saldo final: R$ {saldo_atual - total_compra:.2f}")
+    # --- TABELA DE SELEÇÃO DE ITENS (NOVA LÓGICA) ---
+    with st.form("form_venda_final"):
+        col_header = st.columns([3, 1, 1])
+        col_header[0].write("**Produto**")
+        col_header[1].write("**Preço**")
+        col_header[2].write("**Qtd**")
         
-        if st.button("✅ CONFIRMAR COMPRA", type="primary", use_container_width=True):
-            update_saldo_aluno(aluno_id, saldo_atual - total_compra)
-            registrar_venda(aluno_id, ", ".join(itens_comprados), total_compra)
-            st.success("Venda realizada!")
-            if modo_turma: st.session_state['aluno_compra_id'] = None
-            st.rerun()
+        # Dicionário para armazenar quantidades
+        quantidades = {}
+        
+        # Itera sobre produtos e cria inputs
+        for index, row in df_alimentos.iterrows():
+            c1, c2, c3 = st.columns([3, 1, 1])
+            c1.write(row['nome'])
+            c2.write(f"R$ {row['valor']:.2f}")
+            # Input numérico para quantidade (começa em 0)
+            quantidades[row['id']] = c3.number_input(
+                "Qtd", 
+                min_value=0, 
+                step=1, 
+                key=f"qtd_{row['id']}", 
+                label_visibility="collapsed"
+            )
+            st.markdown("<hr style='margin: 0px 0px 10px 0px; border-top: 1px dotted #bbb;'>", unsafe_allow_html=True)
+
+        if st.form_submit_button("✅ CONFIRMAR E CALCULAR", type="primary"):
+            total_compra = 0.0
+            itens_comprados = []
+            
+            # Calcula total varrendo as quantidades preenchidas
+            for prod_id, qtd in quantidades.items():
+                if qtd > 0:
+                    # Acha o produto original
+                    item = df_alimentos[df_alimentos['id'] == prod_id].iloc[0]
+                    subtotal = item['valor'] * qtd
+                    total_compra += subtotal
+                    itens_comprados.append(f"{qtd}x {item['nome']}")
+
+            if total_compra > 0:
+                saldo_final = saldo_atual - total_compra
+                
+                # Executa venda
+                update_saldo_aluno(aluno_id, saldo_final)
+                registrar_venda(aluno_id, ", ".join(itens_comprados), total_compra)
+                
+                st.success(f"Venda de R$ {total_compra:.2f} realizada! Novo saldo: R$ {saldo_final:.2f}")
+                
+                # Reseta estado se necessário
+                if modo_turma: st.session_state['aluno_compra_id'] = None
+                st.rerun()
+            else:
+                st.warning("Selecione pelo menos 1 item.")
 
 # --- RUN ---
 if st.session_state['logado']:
