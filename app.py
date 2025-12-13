@@ -4,6 +4,7 @@ import sqlite3
 import shutil
 import os
 from datetime import datetime
+from collections import Counter
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
@@ -36,14 +37,23 @@ def init_db():
     except sqlite3.OperationalError:
         pass
 
-    # 2. Tabela de ALIMENTOS
+    # 2. Tabela de ALIMENTOS (Com nova coluna TIPO)
     c.execute('''
         CREATE TABLE IF NOT EXISTS alimentos (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             nome TEXT,
-            valor REAL
+            valor REAL,
+            tipo TEXT
         )
     ''')
+    
+    # Migração para adicionar coluna TIPO em bancos existentes
+    try:
+        c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT")
+        # Define padrão como ALIMENTO para itens antigos
+        c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
+    except sqlite3.OperationalError:
+        pass
 
     # 3. Tabela de TRANSAÇÕES
     c.execute('''
@@ -112,18 +122,42 @@ def get_vendas_hoje_turma(turma):
     conn.close()
     return df
 
-# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS) ---
-def add_alimento_db(nome, valor):
+def get_historico_preferencias(aluno_id):
+    conn = sqlite3.connect(DB_FILE)
+    query = "SELECT itens FROM transacoes WHERE aluno_id = ? ORDER BY id DESC LIMIT 10"
+    cursor = conn.cursor()
+    cursor.execute(query, (aluno_id,))
+    rows = cursor.fetchall()
+    conn.close()
+
+    contador = Counter()
+    for row in rows:
+        itens_str = row[0]
+        if itens_str:
+            lista_itens = itens_str.split(", ")
+            for item in lista_itens:
+                try:
+                    parts = item.split("x ")
+                    if len(parts) == 2:
+                        qtd = int(parts[0])
+                        nome_produto = parts[1]
+                        contador[nome_produto] += qtd
+                except:
+                    continue
+    return contador
+
+# --- FUNÇÕES DE GERENCIAMENTO (ALIMENTOS - ATUALIZADAS COM TIPO) ---
+def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('INSERT INTO alimentos (nome, valor) VALUES (?, ?)', (nome, valor))
+    c.execute('INSERT INTO alimentos (nome, valor, tipo) VALUES (?, ?, ?)', (nome, valor, tipo))
     conn.commit()
     conn.close()
 
-def update_alimento_db(id_alimento, nome, valor):
+def update_alimento_db(id_alimento, nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('UPDATE alimentos SET nome=?, valor=? WHERE id=?', (nome, valor, id_alimento))
+    c.execute('UPDATE alimentos SET nome=?, valor=?, tipo=? WHERE id=?', (nome, valor, tipo, id_alimento))
     conn.commit()
     conn.close()
 
@@ -209,7 +243,6 @@ def login_screen():
 
 # --- Menu Principal ---
 def main_menu():
-    # --- BARRA LATERAL ---
     st.sidebar.title("Menu")
     
     st.sidebar.markdown("---")
@@ -231,7 +264,6 @@ def main_menu():
         st.session_state['menu_atual'] = None
         st.rerun()
 
-    # --- HEADER ---
     st.header("Painel Principal")
     st.write("Usuário logado: fvilhena")
     
@@ -273,19 +305,23 @@ def main_menu():
             st.markdown("---")
             df_ali = get_all_alimentos()
 
+            # --- NOVO ALIMENTO ---
             if acao_alim == "NOVO ALIMENTO":
                 st.write("📝 **Cadastrar Novo Item**")
                 with st.form("form_novo_alimento"):
                     nome_p = st.text_input("Nome do Produto")
                     valor_p = st.number_input("Valor (R$)", min_value=0.00, step=0.50)
+                    tipo_p = st.selectbox("Tipo do Produto", ["ALIMENTO", "BEBIDA"])
                     if st.form_submit_button("CADASTRAR"):
-                        add_alimento_db(nome_p, valor_p)
+                        add_alimento_db(nome_p, valor_p, tipo_p)
                         st.success("Alimento cadastrado com sucesso!")
                         st.rerun()
+                
                 if not df_ali.empty:
                     st.write("Itens Cadastrados:")
-                    st.dataframe(df_ali[['nome', 'valor']], hide_index=True)
+                    st.dataframe(df_ali[['nome', 'valor', 'tipo']], hide_index=True)
 
+            # --- ALTERAR ALIMENTO ---
             elif acao_alim == "ALTERAR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -295,14 +331,22 @@ def main_menu():
                     esc_ali = st.selectbox("Selecione o Alimento:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
                     dados_ali = df_ali[df_ali['id'] == id_ali].iloc[0]
+                    
                     with st.form("form_alterar_ali"):
                         n_n = st.text_input("Nome", value=dados_ali['nome'])
                         n_v = st.number_input("Valor (R$)", value=float(dados_ali['valor']), step=0.50)
+                        
+                        # Recupera tipo atual ou define padrão
+                        tipo_atual = dados_ali['tipo'] if 'tipo' in dados_ali and dados_ali['tipo'] in ["ALIMENTO", "BEBIDA"] else "ALIMENTO"
+                        idx_tipo = ["ALIMENTO", "BEBIDA"].index(tipo_atual)
+                        n_t = st.selectbox("Tipo do Produto", ["ALIMENTO", "BEBIDA"], index=idx_tipo)
+                        
                         if st.form_submit_button("SALVAR ALTERAÇÕES"):
-                            update_alimento_db(id_ali, n_n, n_v)
+                            update_alimento_db(id_ali, n_n, n_v, n_t)
                             st.success("Alimento atualizado!")
                             st.rerun()
 
+            # --- EXCLUIR ALIMENTO ---
             elif acao_alim == "EXCLUIR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -452,15 +496,13 @@ def main_menu():
             else:
                 st.warning("Nenhum aluno cadastrado.")
 
-        # --- MODO 2: TURMA (COM TABELA) ---
+        # --- MODO 2: TURMA ---
         elif st.session_state.get('modo_compra') == 'turma':
-            
             if st.session_state.get('turma_selecionada') is None:
                 st.info("Modo: Venda por Turma")
                 if st.button("⬅️ Voltar"):
                     st.session_state['modo_compra'] = None
                     st.rerun()
-                
                 df_alunos = get_all_alunos()
                 if not df_alunos.empty:
                     turmas = sorted(df_alunos['turma'].dropna().astype(str).unique())
@@ -473,7 +515,6 @@ def main_menu():
 
             else:
                 turma_atual = st.session_state['turma_selecionada']
-                
                 if st.session_state.get('resumo_turma'):
                     st.markdown(f"### 📋 Conferência: {turma_atual}")
                     st.info("Confira as vendas realizadas HOJE para esta turma antes de encerrar.")
@@ -502,9 +543,7 @@ def main_menu():
                         if st.button("⬅️ Voltar para Vendas"):
                             st.session_state['resumo_turma'] = False
                             st.rerun()
-
                 else:
-                    # CABEÇALHO DA TURMA
                     c_head, c_btn = st.columns([3, 1])
                     with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
                     with c_btn:
@@ -516,31 +555,20 @@ def main_menu():
                         st.write("Selecione o aluno na lista abaixo:")
                         df_turma = get_alunos_por_turma(turma_atual)
                         
-                        # --- TABELA DE ALUNOS (NOVO FORMATO) ---
-                        # Cabeçalho da Tabela
                         h1, h2, h3 = st.columns([3, 1, 1])
                         h1.markdown("**Nome do Aluno**")
                         h2.markdown("**Saldo**")
                         h3.markdown("**Ação**")
                         st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
                         
-                        # Linhas da Tabela
                         for index, row in df_turma.iterrows():
                             r1, r2, r3 = st.columns([3, 1, 1])
-                            
-                            # Nome
                             r1.write(f"{row['nome']}")
-                            
-                            # Saldo Colorido
                             cor = "green" if row['saldo'] >= 0 else "red"
                             r2.markdown(f"<span style='color:{cor}; font-weight:bold'>R$ {row['saldo']:.2f}</span>", unsafe_allow_html=True)
-                            
-                            # Botão de Seleção
                             if r3.button("VENDER", key=f"sel_{row['id']}"):
                                 st.session_state['aluno_compra_id'] = row['id']
                                 st.rerun()
-                            
-                            # Divisor sutil
                             st.markdown("<hr style='margin: 5px 0px; border-top: 1px dotted #eee;'>", unsafe_allow_html=True)
 
                     else:
@@ -550,7 +578,7 @@ def main_menu():
                             st.rerun()
                         realizar_venda_form(id_aluno_compra, modo_turma=True)
 
-# --- AUXILIAR VENDA ---
+# --- AUXILIAR VENDA (INTELIGENTE + SEPARADA POR TIPO) ---
 def realizar_venda_form(aluno_id, modo_turma=False):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row 
@@ -579,23 +607,47 @@ def realizar_venda_form(aluno_id, modo_turma=False):
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    with st.form("form_venda_final"):
-        col_header = st.columns([3, 1, 1])
-        col_header[0].write("**Produto**")
-        col_header[1].write("**Preço**")
-        col_header[2].write("**Qtd**")
-        
-        quantidades = {}
-        
-        for index, row in df_alimentos.iterrows():
-            c1, c2, c3 = st.columns([3, 1, 1])
-            c1.write(row['nome'])
-            c2.write(f"R$ {row['valor']:.2f}")
-            quantidades[row['id']] = c3.number_input(
-                "Qtd", min_value=0, step=1, key=f"qtd_{row['id']}", label_visibility="collapsed"
-            )
-            st.markdown("<hr style='margin: 0px 0px 10px 0px; border-top: 1px dotted #bbb;'>", unsafe_allow_html=True)
+    # 1. Inteligência: Pega histórico
+    freq_dict = get_historico_preferencias(aluno_id)
+    df_alimentos['freq'] = df_alimentos['nome'].map(freq_dict).fillna(0)
+    
+    # 2. Ordena (Mais frequentes primeiro, depois Alfabético)
+    df_alimentos = df_alimentos.sort_values(by=['freq', 'nome'], ascending=[False, True])
+    
+    # 3. SEPARAÇÃO BEBIDA / ALIMENTO
+    # Preenche vazios com 'ALIMENTO' por segurança
+    if 'tipo' not in df_alimentos.columns:
+        df_alimentos['tipo'] = 'ALIMENTO'
+    
+    df_bebidas = df_alimentos[df_alimentos['tipo'] == 'BEBIDA']
+    df_comidas = df_alimentos[df_alimentos['tipo'] != 'BEBIDA'] # Pega ALIMENTO e qualquer outro (segurança)
 
+    with st.form("form_venda_final"):
+        quantidades = {}
+
+        # --- SEÇÃO 1: BEBIDAS ---
+        if not df_bebidas.empty:
+            st.markdown("### 🥤 Bebidas")
+            for index, row in df_bebidas.iterrows():
+                c1, c2, c3 = st.columns([3, 1, 1])
+                nome_display = f"⭐ {row['nome']}" if row['freq'] > 0 else row['nome']
+                c1.write(nome_display)
+                c2.write(f"R$ {row['valor']:.2f}")
+                quantidades[row['id']] = c3.number_input("Qtd", min_value=0, step=1, key=f"qtd_{row['id']}", label_visibility="collapsed")
+                st.markdown("<hr style='margin: 0px 0px 5px 0px; border-top: 1px dotted #ddd;'>", unsafe_allow_html=True)
+
+        # --- SEÇÃO 2: ALIMENTOS ---
+        if not df_comidas.empty:
+            st.markdown("### 🥪 Alimentos")
+            for index, row in df_comidas.iterrows():
+                c1, c2, c3 = st.columns([3, 1, 1])
+                nome_display = f"⭐ {row['nome']}" if row['freq'] > 0 else row['nome']
+                c1.write(nome_display)
+                c2.write(f"R$ {row['valor']:.2f}")
+                quantidades[row['id']] = c3.number_input("Qtd", min_value=0, step=1, key=f"qtd_{row['id']}", label_visibility="collapsed")
+                st.markdown("<hr style='margin: 0px 0px 5px 0px; border-top: 1px dotted #ddd;'>", unsafe_allow_html=True)
+
+        st.markdown("---")
         if st.form_submit_button("✅ CONFIRMAR E CALCULAR", type="primary"):
             total_compra = 0.0
             itens_comprados = []
@@ -612,7 +664,6 @@ def realizar_venda_form(aluno_id, modo_turma=False):
                 update_saldo_aluno(aluno_id, saldo_final)
                 registrar_venda(aluno_id, ", ".join(itens_comprados), total_compra)
                 st.success(f"Venda de R$ {total_compra:.2f} realizada! Novo saldo: R$ {saldo_final:.2f}")
-                
                 if modo_turma: st.session_state['aluno_compra_id'] = None
                 st.rerun()
             else:
