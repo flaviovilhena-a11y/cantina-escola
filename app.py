@@ -103,6 +103,25 @@ def registrar_venda(aluno_id, itens_str, valor_total):
     conn.commit()
     conn.close()
 
+# --- NOVA FUNÇÃO: RELATÓRIO DO DIA POR TURMA ---
+def get_vendas_hoje_turma(turma):
+    conn = sqlite3.connect(DB_FILE)
+    # Pega a data de hoje para filtrar (ex: 13/12/2025)
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    query = '''
+        SELECT a.nome, t.itens, t.valor_total
+        FROM transacoes t
+        JOIN alunos a ON t.aluno_id = a.id
+        WHERE a.turma = ? AND t.data_hora LIKE ?
+        ORDER BY t.id DESC
+    '''
+    try:
+        df = pd.read_sql_query(query, conn, params=(turma, f"{hoje}%"))
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
 # --- Funções Alimentos e Upsert ---
 def add_alimento_db(nome, valor):
     conn = sqlite3.connect(DB_FILE)
@@ -219,9 +238,13 @@ def main_menu():
     with col2:
         if st.button("COMPRAR REFEIÇÃO", use_container_width=True):
             st.session_state['menu_atual'] = 'comprar'
-            st.session_state['modo_compra'] = None
-            st.session_state['turma_selecionada'] = None
-            st.session_state['aluno_compra_id'] = None
+            # Reseta variáveis de compra ao entrar
+            if 'modo_compra' not in st.session_state: st.session_state['modo_compra'] = None
+            if 'turma_selecionada' not in st.session_state: st.session_state['turma_selecionada'] = None
+            if 'aluno_compra_id' not in st.session_state: st.session_state['aluno_compra_id'] = None
+            # Variável nova para o resumo
+            if 'resumo_turma' not in st.session_state: st.session_state['resumo_turma'] = False
+
     with col3:
         btn_saldo = st.button("SALDO/HISTÓRICO", use_container_width=True)
     with col4:
@@ -279,22 +302,18 @@ def main_menu():
                     try:
                         df = pd.read_csv(up_csv, sep=None, engine='python', encoding='latin1')
                         
-                        # --- LIMPEZA DE CARACTERES ESTRANHOS ---
-                        # Corrige nomes como VenÃ¢ncio (â) e AraÃºjo (ú)
+                        # --- LIMPEZA DOS DADOS ---
                         for col in df.select_dtypes(include=['object']):
-                            # 1. Â -> o (para 1º ano)
                             df[col] = df[col].astype(str).str.replace('1Â', '1o', regex=False)
-                            # 2. Corrige UTF-8 mal interpretado (Mojibake)
-                            df[col] = df[col].astype(str).str.replace('Ã¢', 'â', regex=False) # ex: Venâncio
-                            df[col] = df[col].astype(str).str.replace('Ãº', 'ú', regex=False) # ex: Araújo
-                            df[col] = df[col].astype(str).str.replace('Ã£', 'ã', regex=False) # ex: Irmão
-                            df[col] = df[col].astype(str).str.replace('Ã©', 'é', regex=False) # ex: José
-                            df[col] = df[col].astype(str).str.replace('Ã¡', 'á', regex=False) 
+                            df[col] = df[col].astype(str).str.replace('Ã¢', 'â', regex=False)
+                            df[col] = df[col].astype(str).str.replace('Ãº', 'ú', regex=False)
+                            df[col] = df[col].astype(str).str.replace('Ã£', 'ã', regex=False)
+                            df[col] = df[col].astype(str).str.replace('Ã©', 'é', regex=False)
+                            df[col] = df[col].astype(str).str.replace('Ã¡', 'á', regex=False)
                             df[col] = df[col].astype(str).str.replace('Ã³', 'ó', regex=False)
-                            df[col] = df[col].astype(str).str.replace('Ã', 'í', regex=False)  # as vezes í aparece só como Ã
-                            # 3. Limpeza final do grau
+                            df[col] = df[col].astype(str).str.replace('Ã', 'í', regex=False)
                             df[col] = df[col].astype(str).str.replace('°', '', regex=False)
-                        # ----------------------------------------
+                        # -------------------------
                         
                         novos, atua = 0, 0
                         bar = st.progress(0)
@@ -357,6 +376,7 @@ def main_menu():
             with c_turma:
                 if st.button("🏫 BUSCA POR TURMA", use_container_width=True):
                     st.session_state['modo_compra'] = 'turma'
+                    st.session_state['resumo_turma'] = False # Reset resumo
 
         # --- MODO 1: ALUNO ---
         if st.session_state.get('modo_compra') == 'aluno':
@@ -378,6 +398,7 @@ def main_menu():
         # --- MODO 2: TURMA ---
         elif st.session_state.get('modo_compra') == 'turma':
             
+            # FASE 0: SELEÇÃO DA TURMA
             if st.session_state.get('turma_selecionada') is None:
                 st.info("Modo: Venda por Turma")
                 if st.button("⬅️ Voltar"):
@@ -391,39 +412,82 @@ def main_menu():
                     
                     if st.button("ABRIR TURMA"):
                         st.session_state['turma_selecionada'] = turma_escolhida
+                        st.session_state['resumo_turma'] = False
                         st.rerun()
                 else:
                     st.warning("Sem alunos cadastrados.")
 
+            # DENTRO DA TURMA
             else:
                 turma_atual = st.session_state['turma_selecionada']
-                c_head, c_btn = st.columns([3, 1])
-                with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
-                with c_btn:
-                    if st.button("❌ ENCERRAR VENDAS DA TURMA", type="primary"):
-                        st.session_state['turma_selecionada'] = None
-                        st.session_state['aluno_compra_id'] = None
-                        st.rerun()
                 
-                if st.session_state.get('aluno_compra_id') is None:
-                    st.write("Selecione o aluno para iniciar a venda:")
-                    df_turma = get_alunos_por_turma(turma_atual)
+                # --- VERIFICA SE ESTÁ NO MODO RESUMO (ENCERRAMENTO) ---
+                if st.session_state.get('resumo_turma'):
+                    st.markdown(f"### 📋 Conferência: {turma_atual}")
+                    st.info("Confira as vendas realizadas HOJE para esta turma antes de encerrar.")
                     
-                    cols = st.columns(2)
-                    for i, (index, row) in enumerate(df_turma.iterrows()):
-                        label_btn = f"{row['nome']} (R$ {row['saldo']:.2f})"
-                        with cols[i % 2]:
-                            if st.button(label_btn, key=f"btn_{row['id']}", use_container_width=True):
-                                st.session_state['aluno_compra_id'] = row['id']
-                                st.rerun()
-                else:
-                    id_aluno_compra = st.session_state['aluno_compra_id']
-                    if st.button("⬅️ Cancelar e voltar para lista"):
-                        st.session_state['aluno_compra_id'] = None
-                        st.rerun()
-                    realizar_venda_form(id_aluno_compra, modo_turma=True)
+                    # Pega vendas do dia
+                    df_vendas = get_vendas_hoje_turma(turma_atual)
+                    
+                    if not df_vendas.empty:
+                        # Exibe dataframe limpo
+                        st.dataframe(
+                            df_vendas.rename(columns={'nome': 'Aluno', 'itens': 'Alimentos', 'valor_total': 'Valor (R$)'}),
+                            hide_index=True,
+                            use_container_width=True
+                        )
+                        total_dia = df_vendas['valor_total'].sum()
+                        st.markdown(f"**Total da Turma Hoje: R$ {total_dia:.2f}**")
+                    else:
+                        st.warning("Nenhuma venda registrada para esta turma hoje.")
+                    
+                    st.markdown("---")
+                    col_conf, col_canc = st.columns(2)
+                    
+                    with col_conf:
+                        if st.button("✅ CONFIRMAR E FECHAR TURMA", type="primary"):
+                            # Limpa tudo e volta ao inicio
+                            st.session_state['turma_selecionada'] = None
+                            st.session_state['aluno_compra_id'] = None
+                            st.session_state['resumo_turma'] = False
+                            st.session_state['modo_compra'] = None
+                            st.success("Turma encerrada com sucesso!")
+                            st.rerun()
+                    
+                    with col_canc:
+                        if st.button("⬅️ Voltar para Vendas"):
+                            st.session_state['resumo_turma'] = False
+                            st.rerun()
 
-# --- AUXILIAR VENDA (ATUALIZADA: TABELA COM QUANTIDADE) ---
+                # --- MODO VENDA NORMAL ---
+                else:
+                    c_head, c_btn = st.columns([3, 1])
+                    with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
+                    with c_btn:
+                        # Botão alterado para ativar RESUMO
+                        if st.button("🏁 ENCERRAR VENDAS DA TURMA", type="primary"):
+                            st.session_state['resumo_turma'] = True
+                            st.rerun()
+                    
+                    if st.session_state.get('aluno_compra_id') is None:
+                        st.write("Selecione o aluno para iniciar a venda:")
+                        df_turma = get_alunos_por_turma(turma_atual)
+                        
+                        cols = st.columns(2)
+                        for i, (index, row) in enumerate(df_turma.iterrows()):
+                            label_btn = f"{row['nome']} (R$ {row['saldo']:.2f})"
+                            with cols[i % 2]:
+                                if st.button(label_btn, key=f"btn_{row['id']}", use_container_width=True):
+                                    st.session_state['aluno_compra_id'] = row['id']
+                                    st.rerun()
+                    else:
+                        id_aluno_compra = st.session_state['aluno_compra_id']
+                        if st.button("⬅️ Cancelar e voltar para lista"):
+                            st.session_state['aluno_compra_id'] = None
+                            st.rerun()
+                        realizar_venda_form(id_aluno_compra, modo_turma=True)
+
+# --- AUXILIAR VENDA (COM TABELA E QTD) ---
 def realizar_venda_form(aluno_id, modo_turma=False):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -449,28 +513,21 @@ def realizar_venda_form(aluno_id, modo_turma=False):
         st.warning("Cadastre alimentos primeiro!")
         return
 
-    # --- TABELA DE SELEÇÃO DE ITENS (NOVA LÓGICA) ---
+    # TABELA DE ITENS COM QTD
     with st.form("form_venda_final"):
         col_header = st.columns([3, 1, 1])
         col_header[0].write("**Produto**")
         col_header[1].write("**Preço**")
         col_header[2].write("**Qtd**")
         
-        # Dicionário para armazenar quantidades
         quantidades = {}
         
-        # Itera sobre produtos e cria inputs
         for index, row in df_alimentos.iterrows():
             c1, c2, c3 = st.columns([3, 1, 1])
             c1.write(row['nome'])
             c2.write(f"R$ {row['valor']:.2f}")
-            # Input numérico para quantidade (começa em 0)
             quantidades[row['id']] = c3.number_input(
-                "Qtd", 
-                min_value=0, 
-                step=1, 
-                key=f"qtd_{row['id']}", 
-                label_visibility="collapsed"
+                "Qtd", min_value=0, step=1, key=f"qtd_{row['id']}", label_visibility="collapsed"
             )
             st.markdown("<hr style='margin: 0px 0px 10px 0px; border-top: 1px dotted #bbb;'>", unsafe_allow_html=True)
 
@@ -478,10 +535,8 @@ def realizar_venda_form(aluno_id, modo_turma=False):
             total_compra = 0.0
             itens_comprados = []
             
-            # Calcula total varrendo as quantidades preenchidas
             for prod_id, qtd in quantidades.items():
                 if qtd > 0:
-                    # Acha o produto original
                     item = df_alimentos[df_alimentos['id'] == prod_id].iloc[0]
                     subtotal = item['valor'] * qtd
                     total_compra += subtotal
@@ -489,14 +544,10 @@ def realizar_venda_form(aluno_id, modo_turma=False):
 
             if total_compra > 0:
                 saldo_final = saldo_atual - total_compra
-                
-                # Executa venda
                 update_saldo_aluno(aluno_id, saldo_final)
                 registrar_venda(aluno_id, ", ".join(itens_comprados), total_compra)
-                
                 st.success(f"Venda de R$ {total_compra:.2f} realizada! Novo saldo: R$ {saldo_final:.2f}")
                 
-                # Reseta estado se necessário
                 if modo_turma: st.session_state['aluno_compra_id'] = None
                 st.rerun()
             else:
