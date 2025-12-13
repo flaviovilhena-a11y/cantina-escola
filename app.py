@@ -143,7 +143,7 @@ def get_all_alimentos():
     conn.close()
     return df
 
-# --- FUNÇÕES DE GERENCIAMENTO (ALUNOS - NOVAS) ---
+# --- FUNÇÕES DE GERENCIAMENTO (ALUNOS) ---
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -266,19 +266,13 @@ def main_menu():
         with c2:
             if st.button("ALIMENTOS", use_container_width=True): st.session_state['submenu'] = 'alimentos'
 
-        # ----------------------------------------------------------------
-        # SUBMENU ALIMENTOS (REFORMULADO)
-        # ----------------------------------------------------------------
+        # SUBMENU ALIMENTOS
         if st.session_state.get('submenu') == 'alimentos':
             st.info("Gerenciar Cardápio")
-            
-            # Navegação estilo abas/botões
             acao_alim = st.radio("Selecione a ação:", ["NOVO ALIMENTO", "ALTERAR ALIMENTO", "EXCLUIR ALIMENTO"], horizontal=True)
             st.markdown("---")
-
             df_ali = get_all_alimentos()
 
-            # --- 1. NOVO ALIMENTO ---
             if acao_alim == "NOVO ALIMENTO":
                 st.write("📝 **Cadastrar Novo Item**")
                 with st.form("form_novo_alimento"):
@@ -288,13 +282,10 @@ def main_menu():
                         add_alimento_db(nome_p, valor_p)
                         st.success("Alimento cadastrado com sucesso!")
                         st.rerun()
-                
-                # Exibe lista para conferência
                 if not df_ali.empty:
                     st.write("Itens Cadastrados:")
                     st.dataframe(df_ali[['nome', 'valor']], hide_index=True)
 
-            # --- 2. ALTERAR ALIMENTO ---
             elif acao_alim == "ALTERAR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -304,7 +295,6 @@ def main_menu():
                     esc_ali = st.selectbox("Selecione o Alimento:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
                     dados_ali = df_ali[df_ali['id'] == id_ali].iloc[0]
-                    
                     with st.form("form_alterar_ali"):
                         n_n = st.text_input("Nome", value=dados_ali['nome'])
                         n_v = st.number_input("Valor (R$)", value=float(dados_ali['valor']), step=0.50)
@@ -313,7 +303,6 @@ def main_menu():
                             st.success("Alimento atualizado!")
                             st.rerun()
 
-            # --- 3. EXCLUIR ALIMENTO ---
             elif acao_alim == "EXCLUIR ALIMENTO":
                 if df_ali.empty:
                     st.warning("Nenhum alimento cadastrado.")
@@ -322,23 +311,17 @@ def main_menu():
                     df_ali['label'] = df_ali['id'].astype(str) + " - " + df_ali['nome']
                     esc_ali = st.selectbox("Selecione para EXCLUIR:", df_ali['label'].unique())
                     id_ali = int(esc_ali.split(' - ')[0])
-                    
                     if st.button("❌ CONFIRMAR EXCLUSÃO"):
                         delete_alimento_db(id_ali)
                         st.success("Alimento removido com sucesso!")
                         st.rerun()
 
-        # ----------------------------------------------------------------
-        # SUBMENU USUÁRIO (REFORMULADO)
-        # ----------------------------------------------------------------
+        # SUBMENU USUÁRIO
         if st.session_state.get('submenu') == 'usuario':
             st.info("Gerenciar Alunos e Turmas")
-            
-            # Adicionado as opções de exclusão
             opt = st.radio("Ação:", ["IMPORTAR CSV", "NOVO ALUNO", "ATUALIZAR ALUNO", "EXCLUIR ALUNO", "EXCLUIR TURMA"])
             st.markdown("---")
 
-            # --- 1. IMPORTAR CSV ---
             if opt == "IMPORTAR CSV":
                 st.write("📂 **Importação em Lote**")
                 up_csv = st.file_uploader("Arquivo CSV", type=['csv'])
@@ -376,7 +359,6 @@ def main_menu():
                         st.success(f"{novos} novos, {atua} atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
             
-            # --- 2. NOVO ALUNO ---
             elif opt == "NOVO ALUNO":
                 st.write("👤 **Cadastro Manual**")
                 with st.form("new_aluno"):
@@ -387,7 +369,6 @@ def main_menu():
                         upsert_aluno(nm, '', tr, '', None, '', None, None, None, sl)
                         st.success("Aluno salvo!")
 
-            # --- 3. ATUALIZAR ALUNO ---
             elif opt == "ATUALIZAR ALUNO":
                 st.write("✏️ **Editar Cadastro**")
                 df_al = get_all_alunos()
@@ -405,10 +386,8 @@ def main_menu():
                             update_aluno_manual(id_a, nn, d['serie'], nt, d['turno'], d['email'], d['telefone1'], d['telefone2'], d['telefone3'], ns)
                             st.success("Atualizado!")
                             st.rerun()
-                else:
-                    st.warning("Sem alunos.")
+                else: st.warning("Sem alunos.")
 
-            # --- 4. EXCLUIR ALUNO ---
             elif opt == "EXCLUIR ALUNO":
                 st.write("🗑️ **Excluir Único Aluno**")
                 df_al = get_all_alunos()
@@ -416,39 +395,28 @@ def main_menu():
                     df_al = df_al.sort_values(by='nome')
                     df_al['lbl'] = df_al['nome'] + " | " + df_al['turma'].astype(str) + " (ID: " + df_al['id'].astype(str) + ")"
                     sel_del = st.selectbox("Selecione o aluno para excluir:", df_al['lbl'].unique())
-                    
-                    # Extrai ID
                     id_del = int(sel_del.split('(ID: ')[1].replace(')', ''))
-                    
                     st.error("Atenção: Esta ação não pode ser desfeita.")
                     if st.button(f"❌ CONFIRMAR EXCLUSÃO DO ALUNO"):
                         delete_aluno_db(id_del)
                         st.success("Aluno excluído.")
                         st.rerun()
-                else:
-                    st.warning("Sem alunos cadastrados.")
+                else: st.warning("Sem alunos cadastrados.")
 
-            # --- 5. EXCLUIR TURMA ---
             elif opt == "EXCLUIR TURMA":
                 st.write("🔥 **Excluir Turma Inteira**")
                 df_al = get_all_alunos()
                 if not df_al.empty:
                     turmas = sorted(df_al['turma'].dropna().astype(str).unique())
                     turma_del = st.selectbox("Selecione a Turma para APAGAR:", turmas)
-                    
-                    # Conta quantos alunos tem nessa turma
                     qtd_alunos = len(df_al[df_al['turma'] == turma_del])
-                    
                     st.warning(f"⚠️ CUIDADO: Você está prestes a apagar a turma '{turma_del}' inteira.")
                     st.write(f"Isso removerá **{qtd_alunos} alunos** do sistema.")
-                    
                     if st.button("🧨 APAGAR TODOS OS ALUNOS DA TURMA"):
                         count = delete_turma_db(turma_del)
                         st.success(f"Operação realizada. {count} alunos removidos.")
                         st.rerun()
-                else:
-                    st.warning("Sem turmas cadastradas.")
-
+                else: st.warning("Sem turmas cadastradas.")
 
     # ==========================================
     #       MENU: COMPRAR REFEIÇÃO
@@ -484,10 +452,9 @@ def main_menu():
             else:
                 st.warning("Nenhum aluno cadastrado.")
 
-        # --- MODO 2: TURMA ---
+        # --- MODO 2: TURMA (COM TABELA) ---
         elif st.session_state.get('modo_compra') == 'turma':
             
-            # FASE 0: SELEÇÃO DA TURMA
             if st.session_state.get('turma_selecionada') is None:
                 st.info("Modo: Venda por Turma")
                 if st.button("⬅️ Voltar"):
@@ -498,24 +465,19 @@ def main_menu():
                 if not df_alunos.empty:
                     turmas = sorted(df_alunos['turma'].dropna().astype(str).unique())
                     turma_escolhida = st.selectbox("Selecione a Turma:", turmas)
-                    
                     if st.button("ABRIR TURMA"):
                         st.session_state['turma_selecionada'] = turma_escolhida
                         st.session_state['resumo_turma'] = False
                         st.rerun()
-                else:
-                    st.warning("Sem alunos cadastrados.")
+                else: st.warning("Sem alunos cadastrados.")
 
-            # DENTRO DA TURMA
             else:
                 turma_atual = st.session_state['turma_selecionada']
                 
                 if st.session_state.get('resumo_turma'):
                     st.markdown(f"### 📋 Conferência: {turma_atual}")
                     st.info("Confira as vendas realizadas HOJE para esta turma antes de encerrar.")
-                    
                     df_vendas = get_vendas_hoje_turma(turma_atual)
-                    
                     if not df_vendas.empty:
                         st.dataframe(
                             df_vendas.rename(columns={'nome': 'Aluno', 'itens': 'Alimentos', 'valor_total': 'Valor (R$)'}),
@@ -524,12 +486,10 @@ def main_menu():
                         )
                         total_dia = df_vendas['valor_total'].sum()
                         st.markdown(f"**Total da Turma Hoje: R$ {total_dia:.2f}**")
-                    else:
-                        st.warning("Nenhuma venda registrada para esta turma hoje.")
+                    else: st.warning("Nenhuma venda registrada para esta turma hoje.")
                     
                     st.markdown("---")
                     col_conf, col_canc = st.columns(2)
-                    
                     with col_conf:
                         if st.button("✅ CONFIRMAR E FECHAR TURMA", type="primary"):
                             st.session_state['turma_selecionada'] = None
@@ -538,13 +498,13 @@ def main_menu():
                             st.session_state['modo_compra'] = None
                             st.success("Turma encerrada com sucesso!")
                             st.rerun()
-                    
                     with col_canc:
                         if st.button("⬅️ Voltar para Vendas"):
                             st.session_state['resumo_turma'] = False
                             st.rerun()
 
                 else:
+                    # CABEÇALHO DA TURMA
                     c_head, c_btn = st.columns([3, 1])
                     with c_head: st.markdown(f"### 🏫 Turma: {turma_atual}")
                     with c_btn:
@@ -553,16 +513,36 @@ def main_menu():
                             st.rerun()
                     
                     if st.session_state.get('aluno_compra_id') is None:
-                        st.write("Selecione o aluno para iniciar a venda:")
+                        st.write("Selecione o aluno na lista abaixo:")
                         df_turma = get_alunos_por_turma(turma_atual)
                         
-                        cols = st.columns(2)
-                        for i, (index, row) in enumerate(df_turma.iterrows()):
-                            label_btn = f"{row['nome']} (R$ {row['saldo']:.2f})"
-                            with cols[i % 2]:
-                                if st.button(label_btn, key=f"btn_{row['id']}", use_container_width=True):
-                                    st.session_state['aluno_compra_id'] = row['id']
-                                    st.rerun()
+                        # --- TABELA DE ALUNOS (NOVO FORMATO) ---
+                        # Cabeçalho da Tabela
+                        h1, h2, h3 = st.columns([3, 1, 1])
+                        h1.markdown("**Nome do Aluno**")
+                        h2.markdown("**Saldo**")
+                        h3.markdown("**Ação**")
+                        st.markdown("<hr style='margin: 0px 0px 10px 0px;'>", unsafe_allow_html=True)
+                        
+                        # Linhas da Tabela
+                        for index, row in df_turma.iterrows():
+                            r1, r2, r3 = st.columns([3, 1, 1])
+                            
+                            # Nome
+                            r1.write(f"{row['nome']}")
+                            
+                            # Saldo Colorido
+                            cor = "green" if row['saldo'] >= 0 else "red"
+                            r2.markdown(f"<span style='color:{cor}; font-weight:bold'>R$ {row['saldo']:.2f}</span>", unsafe_allow_html=True)
+                            
+                            # Botão de Seleção
+                            if r3.button("VENDER", key=f"sel_{row['id']}"):
+                                st.session_state['aluno_compra_id'] = row['id']
+                                st.rerun()
+                            
+                            # Divisor sutil
+                            st.markdown("<hr style='margin: 5px 0px; border-top: 1px dotted #eee;'>", unsafe_allow_html=True)
+
                     else:
                         id_aluno_compra = st.session_state['aluno_compra_id']
                         if st.button("⬅️ Cancelar e voltar para lista"):
@@ -570,7 +550,7 @@ def main_menu():
                             st.rerun()
                         realizar_venda_form(id_aluno_compra, modo_turma=True)
 
-# --- AUXILIAR VENDA (BLINDADA) ---
+# --- AUXILIAR VENDA ---
 def realizar_venda_form(aluno_id, modo_turma=False):
     conn = sqlite3.connect(DB_FILE)
     conn.row_factory = sqlite3.Row 
@@ -580,21 +560,19 @@ def realizar_venda_form(aluno_id, modo_turma=False):
     conn.close()
     
     if not aluno:
-        st.error("Erro: Aluno não encontrado no banco de dados. Tente atualizar a página.")
+        st.error("Erro: Aluno não encontrado. Tente atualizar.")
         return
 
     saldo_atual = aluno['saldo']
     nome_aluno = aluno['nome']
     
     st.markdown(f"""
-    <div style="padding:10px; background-color:#f0f2f6; border-radius:5px;">
+    <div style="padding:10px; background-color:#f0f2f6; border-radius:5px; margin-bottom:10px;">
         <h4>👤 {nome_aluno}</h4>
         <h2 style="color:{'green' if saldo_atual >=0 else 'red'}">Saldo: R$ {saldo_atual:.2f}</h2>
     </div>
     """, unsafe_allow_html=True)
     
-    st.write("")
-    st.write("📦 **Selecione os itens e quantidades:**")
     df_alimentos = get_all_alimentos()
     
     if df_alimentos.empty:
