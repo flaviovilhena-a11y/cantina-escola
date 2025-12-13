@@ -73,7 +73,6 @@ def get_all_alunos():
 def get_alunos_por_turma(turma):
     conn = sqlite3.connect(DB_FILE)
     try:
-        # Ordena os alunos por nome dentro da turma
         df = pd.read_sql_query("SELECT * FROM alunos WHERE turma = ? ORDER BY nome ASC", conn, params=(turma,))
     except:
         df = pd.DataFrame()
@@ -168,18 +167,20 @@ init_db()
 if 'logado' not in st.session_state:
     st.session_state['logado'] = False
 
-# --- Tela de Login ---
+# --- Tela de Login (MODIFICADA: SEM SENHA) ---
 def login_screen():
     st.title("Cantina Escolar do Centro Educacional Peixinho Dourado")
     st.write("Acesso ao Sistema")
+    
     usuario = st.text_input("Login")
-    senha = st.text_input("Senha", type="password")
+    # Senha removida temporariamente
+    
     if st.button("Entrar"):
-        if (usuario == "admin" and senha == "1234") or (usuario == "fvilhena" and senha == "m3r1d1ano"):
+        if usuario == "fvilhena":
             st.session_state['logado'] = True
             st.rerun()
         else:
-            st.error("Login ou senha incorretos")
+            st.error("Usuário não autorizado. Use: fvilhena")
 
 # --- Menu Principal ---
 def main_menu():
@@ -207,7 +208,7 @@ def main_menu():
 
     # --- HEADER ---
     st.header("Painel Principal")
-    st.write("Usuário logado: Administrador")
+    st.write("Usuário logado: fvilhena")
     
     col1, col2 = st.columns(2)
     col3, col4 = st.columns(2)
@@ -279,14 +280,11 @@ def main_menu():
                     try:
                         df = pd.read_csv(up_csv, sep=None, engine='python', encoding='latin1')
                         
-                        # --- LIMPEZA DOS DADOS (NOVO) ---
-                        # Substitui Â por o E DEPOIS remove °
+                        # --- LIMPEZA DOS DADOS ---
                         for col in df.select_dtypes(include=['object']):
-                            # Primeiro: Â -> o
                             df[col] = df[col].astype(str).str.replace('Â', 'o', regex=False)
-                            # Segundo: Remove o ° (grau)
                             df[col] = df[col].astype(str).str.replace('°', '', regex=False)
-                        # --------------------------------
+                        # -------------------------
                         
                         novos, atua = 0, 0
                         bar = st.progress(0)
@@ -320,7 +318,6 @@ def main_menu():
             elif opt == "ATUALIZAR ALUNO":
                 df_al = get_all_alunos()
                 if not df_al.empty:
-                    # Ordena a lista de alunos
                     df_al = df_al.sort_values(by='nome')
                     df_al['lbl'] = df_al['id'].astype(str) + " - " + df_al['nome']
                     sel = st.selectbox("Aluno:", df_al['lbl'].unique())
@@ -360,7 +357,6 @@ def main_menu():
             
             df_alunos = get_all_alunos()
             if not df_alunos.empty:
-                # Ordena lista global
                 df_alunos = df_alunos.sort_values(by='nome')
                 df_alunos['lbl'] = df_alunos['nome'] + " | Turma: " + df_alunos['turma'].astype(str)
                 aluno_sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
@@ -380,7 +376,6 @@ def main_menu():
                 
                 df_alunos = get_all_alunos()
                 if not df_alunos.empty:
-                    # ORDENAÇÃO CRESCENTE DAS TURMAS GARANTIDA AQUI
                     turmas = sorted(df_alunos['turma'].dropna().astype(str).unique())
                     turma_escolhida = st.selectbox("Selecione a Turma:", turmas)
                     
@@ -404,11 +399,9 @@ def main_menu():
                     st.write("Selecione o aluno para iniciar a venda:")
                     df_turma = get_alunos_por_turma(turma_atual)
                     
-                    # Cria grade de botões
                     cols = st.columns(2)
                     for i, (index, row) in enumerate(df_turma.iterrows()):
                         label_btn = f"{row['nome']} (R$ {row['saldo']:.2f})"
-                        # Distribui entre 2 colunas
                         with cols[i % 2]:
                             if st.button(label_btn, key=f"btn_{row['id']}", use_container_width=True):
                                 st.session_state['aluno_compra_id'] = row['id']
