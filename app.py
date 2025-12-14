@@ -155,22 +155,12 @@ def login_screen():
 
 def main_menu():
     st.sidebar.title("Menu"); st.sidebar.subheader("💾 Backup")
-    
-    # --- CORREÇÃO DA SINTAXE DE BACKUP ---
-    if os.path.exists(DB_FILE):
-        with open(DB_FILE, "rb") as f:
-            st.sidebar.download_button("⬇️ BAIXAR DADOS", f, "backup.db")
-            
+    if os.path.exists(DB_FILE): 
+        with open(DB_FILE,"rb") as f: st.sidebar.download_button("⬇️ BAIXAR DADOS",f,"backup.db")
     up=st.sidebar.file_uploader("RESTORE",type=["db"])
     if up and st.sidebar.button("CONFIRMAR IMPORTAÇÃO DE DADOS"):
-        try: 
-            open(DB_FILE,"wb").write(up.getbuffer())
-            st.sidebar.success("✅ Sucesso! Reiniciando...")
-            time.sleep(2)
-            st.rerun()
-        except Exception as e: 
-            st.sidebar.error(f"❌ {e}")
-            
+        try: open(DB_FILE,"wb").write(up.getbuffer()); st.sidebar.success("✅ Sucesso! Reiniciando..."); time.sleep(2); st.rerun()
+        except Exception as e: st.sidebar.error(f"❌ {e}")
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
 
@@ -314,7 +304,9 @@ def main_menu():
                     if c2.button("⬅️ Voltar"): st.session_state['res_tur']=False; st.rerun()
                 else:
                     c1,c2=st.columns([3,1]); c1.markdown(f"### {tur}"); 
-                    if c2.button("🏁 ENCERRAR"): st.session_state['res_tur']=True; st.rerun()
+                    # BOTÃO ENCERRAR TURMA ATUALIZADO
+                    if c2.button("🛑 ENCERRAR TURMA", type="primary"): st.session_state['res_tur']=True; st.rerun()
+                    
                     if not st.session_state.get('aid_venda'):
                         df=get_alunos_por_turma(tur); h1,h2,h3=st.columns([3,1,1]); h1.write("Nome"); h2.write("Saldo"); h3.write("Ação")
                         for i,r in df.iterrows():
