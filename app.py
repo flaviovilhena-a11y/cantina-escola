@@ -52,7 +52,7 @@ class PixPayload:
         p=self._f("00","01")+self._f("26",self._f("00","BR.GOV.BCB.PIX")+self._f("01",self.c))+self._f("52","0000")+self._f("53","986")+self._f("54",self.v)+self._f("58","BR")+self._f("59",self.n)+self._f("60",self.ci)+self._f("62",self._f("05",self.t))+"6304"
         return p+self._crc(p)
 
-# --- FUNÇÕES DB (LEITURA) ---
+# --- FUNÇÕES DB ---
 def get_all_alunos(): 
     conn=sqlite3.connect(DB_FILE)
     try: df=pd.read_sql_query("SELECT * FROM alunos",conn)
@@ -64,21 +64,6 @@ def get_alunos_por_turma(t):
     df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,))
     conn.close(); return df
 
-def get_vendas_hoje_turma(t): 
-    conn=sqlite3.connect(DB_FILE)
-    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
-    conn.close(); return df
-
-def get_historico_preferencias(aid):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
-    for row in r: 
-        if row[0]: 
-            for i in row[0].split(", "): 
-                try: cnt[i.split("x ")[1]]+=int(i.split("x ")[0])
-                except: pass
-    return cnt
-
-# --- FUNÇÕES DB (ESCRITA) ---
 def update_saldo_aluno(id,s): 
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id))
@@ -96,6 +81,60 @@ def registrar_recarga(aid,v,m,n=None):
     c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid))
     conn.commit(); conn.close()
 
+def get_vendas_hoje_turma(t): 
+    conn=sqlite3.connect(DB_FILE)
+    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
+    conn.close(); return df
+
+def get_historico_preferencias(aid):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
+    for row in r: 
+        if row[0]: 
+            for i in row[0].split(", "): 
+                try: cnt[i.split("x ")[1]]+=int(i.split("x ")[0])
+                except: pass
+    return cnt
+
+def get_extrato_aluno(aid, filtro):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
+    c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close()
+    
+    # Lógica de Filtro Unificada
+    dc = None
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if filtro == "HOJE": dc = hoje
+    elif filtro == "7 DIAS": dc = hoje - timedelta(days=7)
+    elif filtro == "30 DIAS": dc = hoje - timedelta(days=30)
+    
+    ext = []
+    for i in v: 
+        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
+        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"COMPRA","Descrição":i[1],"Valor":-i[2]})
+    for i in r:
+        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
+        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Descrição":f"Via {i[2]}","Valor":i[1]})
+    if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
+    return pd.DataFrame()
+
+def get_vendas_cancelar(aid, filtro):
+    conn=sqlite3.connect(DB_FILE)
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    dc = None
+    if filtro == "HOJE": dc = hoje
+    elif filtro == "7 DIAS": dc = hoje - timedelta(days=7)
+    elif filtro == "30 DIAS": dc = hoje - timedelta(days=30)
+
+    try:
+        # Busca todas e filtra no python para simplificar data string
+        query = "SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC"
+        df = pd.read_sql_query(query, conn, params=(aid,))
+        if not df.empty and dc:
+            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S")
+            df = df[df['dt_obj'] >= dc]
+    except: df = pd.DataFrame()
+    conn.close(); return df
+
 def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("DELETE FROM transacoes WHERE id = ?", (tid,))
@@ -103,50 +142,9 @@ def cancelar_venda_db(tid, aid, valor):
     c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid))
     conn.commit(); conn.close()
 
-# --- FUNÇÕES DE FILTRO DE DATA (EXTRATO E CANCELAMENTO) ---
-def calcular_data_corte(filtro):
-    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    if filtro == "HOJE": return hoje
-    elif filtro == "7 DIAS": return hoje - timedelta(days=7)
-    elif filtro == "30 DIAS": return hoje - timedelta(days=30)
-    return None # TODOS
-
-def get_extrato_aluno(aid, filtro):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
-    c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close()
-    
-    dc = calcular_data_corte(filtro)
-    ext = []
-    
-    for i in v: 
-        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"COMPRA","Descrição":i[1],"Valor":-i[2]})
-    for i in r:
-        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Descrição":f"Via {i[2]}","Valor":i[1]})
-        
-    if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
-    return pd.DataFrame()
-
-def get_vendas_cancelar(aid, filtro):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC", (aid,))
-    rows = c.fetchall(); conn.close()
-    
-    dc = calcular_data_corte(filtro)
-    vendas = []
-    
-    for r in rows:
-        dt = datetime.strptime(r[1], "%d/%m/%Y %H:%M:%S")
-        if not dc or dt >= dc:
-            vendas.append({"id": r[0], "data_hora": r[1], "itens": r[2], "valor_total": r[3]})
-            
-    return pd.DataFrame(vendas)
-
 # --- FUNÇÕES RELATÓRIO ---
-def get_relatorio_produtos(df):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{df}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
+def get_relatorio_produtos(data_filtro):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{data_filtro}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
     for r in rs:
         if r[0]: 
             for i in r[0].split(", "):
@@ -157,16 +155,41 @@ def get_relatorio_produtos(df):
     if dd: return pd.DataFrame(dd).sort_values("Qtd Vendida",ascending=False),td
     return pd.DataFrame(),0.0
 
-def get_relatorio_alunos_dia(df):
+def get_relatorio_alunos_dia(data_filtro):
     conn=sqlite3.connect(DB_FILE)
     q='''SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC'''
-    try: d=pd.read_sql_query(q,conn,params=(f"{df}%",))
+    try: d=pd.read_sql_query(q,conn,params=(f"{data_filtro}%",))
     except: d=pd.DataFrame()
     conn.close()
     if not d.empty:
         d['Hora']=d['data_hora'].apply(lambda x:x.split(' ')[1]); d=d[['Hora','nome','itens','valor_total']]; d.columns=['Hora','Aluno','Produtos','Valor']
         d=pd.concat([d,pd.DataFrame([{'Hora':'','Aluno':'TOTAL GERAL','Produtos':'','Valor':d['Valor'].sum()}])],ignore_index=True)
     return d
+
+def get_relatorio_recargas_dia(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    query = '''
+        SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor 
+        FROM recargas r 
+        JOIN alunos a ON r.aluno_id = a.id 
+        WHERE r.data_hora LIKE ? 
+        ORDER BY r.data_hora ASC
+    '''
+    try:
+        df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
+        if not df.empty:
+            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
+            df = df[['Hora', 'nome', 'metodo_pagamento', 'valor']]
+            df.columns = ['Hora', 'Aluno', 'Método', 'Valor']
+            
+            # Adiciona linha de total
+            total = df['Valor'].sum()
+            linha_total = pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':total}])
+            df = pd.concat([df, linha_total], ignore_index=True)
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
 
 # --- CRUD ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
@@ -356,7 +379,6 @@ def main_menu():
     # --- HISTÓRICO ---
     if menu == 'hist':
         st.markdown("---"); st.subheader("📜 Extrato e Histórico")
-        
         c1, c2 = st.columns(2)
         if c1.button("📜 VER EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
         if c2.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state['hist_mode'] = 'cancel'; st.session_state['hist_id'] = None
@@ -365,7 +387,6 @@ def main_menu():
         if not df.empty:
             df = df.sort_values(by='nome'); df['lbl'] = df['nome'] + " | " + df['turma'].astype(str)
             
-            # --- MODO 1: VER EXTRATO ---
             if st.session_state.get('hist_mode') == 'view':
                 if not st.session_state.get('hist_id'):
                     sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
@@ -374,49 +395,37 @@ def main_menu():
                     if st.button("⬅️ Trocar Aluno"): st.session_state['hist_id'] = None; st.rerun()
                     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
                     st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
-                    filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"]) # Adicionado HOJE
+                    filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
                     if st.button("EXIBIR"):
                         ext=get_extrato_aluno(al['id'], filt)
                         if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
                         else: st.info("Vazio.")
 
-            # --- MODO 2: CANCELAR VENDA ---
             elif st.session_state.get('hist_mode') == 'cancel':
                 st.info("⚠️ Cancelamento de vendas")
-                sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
-                id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
-                
-                # ADICIONADO FILTRO AQUI TAMBÉM
+                sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique()); id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
                 filt_canc = st.selectbox("Período:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
-                
                 vendas_lista = get_vendas_cancelar(id_aluno, filt_canc)
                 
                 if not vendas_lista.empty:
-                    # Cria descritivo
                     vendas_lista['desc'] = vendas_lista.apply(lambda x: f"ID: {x['id']} | {x['data_hora']} | R$ {x['valor_total']:.2f} | {x['itens']}", axis=1)
                     venda_sel = st.selectbox("Selecione a compra:", vendas_lista['desc'])
-                    
                     if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
                         id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", ""))
                         valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
-                        
-                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
-                        st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos.")
-                        time.sleep(2)
-                        st.rerun()
-                else:
-                    st.warning("Nenhuma venda encontrada neste período.")
-        else:
-            st.warning("Sem alunos.")
+                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno); st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
+                else: st.warning("Nenhuma venda encontrada.")
+        else: st.warning("Sem alunos.")
 
     # --- RELATÓRIOS ---
     if menu == 'relatorios':
         st.markdown("---"); st.subheader("📊 Relatórios")
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
-        c1, c2 = st.columns(2)
+        c1, c2, c3 = st.columns(3)
         if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
         if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
+        if c3.button("💰 RECARGAS", use_container_width=True): st.session_state['rel_mode'] = 'recargas'
 
         if st.session_state.get('rel_mode') == 'produtos':
             df_p, tot = get_relatorio_produtos(d_str)
@@ -430,6 +439,12 @@ def main_menu():
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
             else: st.info("Nada vendido.")
+
+        elif st.session_state.get('rel_mode') == 'recargas':
+            df_r = get_relatorio_recargas_dia(d_str)
+            if not df_r.empty:
+                st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+            else: st.info("Nenhuma recarga.")
 
 # --- FUNÇÃO DE VENDA ---
 def realizar_venda_form(aid, origin=None):
