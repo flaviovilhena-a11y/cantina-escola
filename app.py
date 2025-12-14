@@ -53,10 +53,9 @@ def init_db():
 class PDFTermico(FPDF):
     def __init__(self, titulo, dados, modo="simples"):
         # Se modo for 'turmas', dados é um dicionário. Se 'simples', é um DataFrame.
-        # Calculamos altura estimada grosseiramente
         linhas = 0
         if modo == "turmas":
-            for df in dados.values(): linhas += len(df) + 4 # +4 para cabeçalhos/rodapés de turma
+            for df in dados.values(): linhas += len(df) + 4 
         else:
             linhas = len(dados)
             
@@ -114,48 +113,47 @@ class PDFTermico(FPDF):
         self.cell(0, 0, border="T", ln=1)
 
     def _gerar_por_turma(self):
-        # Percorre o dicionário { 'Turma A': df, 'Turma B': df }
         for turma, df in self.dados.items():
-            # 1. Cabeçalho da Turma
             self.set_font('Courier', 'B', 9)
             self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L')
-            self.cell(0, 0, border="T", ln=1) # Linha fina
+            self.cell(0, 0, border="T", ln=1)
             
-            # 2. Cabeçalhos Colunas (Produto | Qtd)
             self.set_font('Courier', 'B', 7)
             self.cell(60, 4, "PRODUTO", 0, 0, 'L')
-            self.cell(16, 4, "QTD", 0, 1, 'R') # Alinhado a direita
+            self.cell(16, 4, "QTD", 0, 1, 'R')
             
-            # 3. Itens
             self.set_font('Courier', '', 7)
             total_financeiro = 0.0
             
             for index, row in df.iterrows():
                 produto = str(row['Produto'])
-                
-                # Pega o total financeiro que já vem calculado na linha 'TOTAL TURMA' mas não exibe ela na lista
                 if produto == "TOTAL TURMA":
                     total_financeiro = row['Total']
                     continue 
-                
                 qtd = str(row['Qtd'])
                 self.cell(60, 4, produto[:30], 0, 0, 'L')
                 self.cell(16, 4, qtd, 0, 1, 'R')
             
-            # 4. Totalizador da Turma
             self.ln(1)
             self.set_font('Courier', 'B', 8)
             self.cell(50, 5, "TOTAL VENDIDO:", 0, 0, 'R')
             self.cell(26, 5, f"R$ {total_financeiro:.2f}", 0, 1, 'R')
             
-            # Espaço para a próxima turma
             self.ln(4)
-            self.cell(0, 0, border="B", ln=1) # Linha separadora de turmas
+            self.cell(0, 0, border="B", ln=1)
             self.ln(2)
 
 # --- FUNÇÕES HELPER PARA DOWNLOAD PDF ---
 def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
-    if not dados: return
+    # CORREÇÃO DO ERRO: Validação correta se é DataFrame ou Dict
+    vazio = False
+    if isinstance(dados, pd.DataFrame):
+        if dados.empty: vazio = True
+    elif not dados: # Para dict ou None
+        vazio = True
+        
+    if vazio: return
+
     try:
         pdf = PDFTermico(titulo_relatorio, dados, modo)
         pdf.gerar_relatorio()
