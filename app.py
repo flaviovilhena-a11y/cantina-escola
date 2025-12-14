@@ -53,12 +53,39 @@ class PixPayload:
         return p+self._crc(p)
 
 # --- FUNÇÕES DB ---
-def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
-def get_alunos_por_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,)); conn.close(); return df
-def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
-def registrar_venda(aid,i,v): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"))); conn.commit(); conn.close()
-def registrar_recarga(aid,v,m,n=None): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"),m,n)); c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
-def get_vendas_hoje_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%")); conn.close(); return df
+def get_all_alunos(): 
+    conn=sqlite3.connect(DB_FILE)
+    try: df=pd.read_sql_query("SELECT * FROM alunos",conn)
+    except: df=pd.DataFrame()
+    conn.close(); return df
+
+def get_alunos_por_turma(t): 
+    conn=sqlite3.connect(DB_FILE)
+    df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,))
+    conn.close(); return df
+
+def update_saldo_aluno(id,s): 
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id))
+    conn.commit(); conn.close()
+
+def registrar_venda(aid,i,v): 
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
+    conn.commit(); conn.close()
+
+def registrar_recarga(aid,v,m,n=None): 
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"),m,n))
+    c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]
+    c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid))
+    conn.commit(); conn.close()
+
+def get_vendas_hoje_turma(t): 
+    conn=sqlite3.connect(DB_FILE)
+    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
+    conn.close(); return df
+
 def get_historico_preferencias(aid):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
     for row in r: 
@@ -67,6 +94,7 @@ def get_historico_preferencias(aid):
                 try: cnt[i.split("x ")[1]]+=int(i.split("x ")[0])
                 except: pass
     return cnt
+
 def get_extrato_aluno(aid,d):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall(); c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close(); dc=datetime.now()-timedelta(days=int(d)) if d!='TODOS' else None; ext=[]
     for i in v: 
@@ -92,7 +120,11 @@ def get_relatorio_produtos(df):
     return pd.DataFrame(),0.0
 
 def get_relatorio_alunos_dia(df):
-    conn=sqlite3.connect(DB_FILE); q='''SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC'''; d=pd.read_sql_query(q,conn,params=(f"{df}%",)); conn.close()
+    conn=sqlite3.connect(DB_FILE)
+    q='''SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC'''
+    try: d=pd.read_sql_query(q,conn,params=(f"{df}%",))
+    except: d=pd.DataFrame()
+    conn.close()
     if not d.empty:
         d['Hora']=d['data_hora'].apply(lambda x:x.split(' ')[1]); d=d[['Hora','nome','itens','valor_total']]; d.columns=['Hora','Aluno','Produtos','Valor']
         d=pd.concat([d,pd.DataFrame([{'Hora':'','Aluno':'TOTAL GERAL','Produtos':'','Valor':d['Valor'].sum()}])],ignore_index=True)
@@ -123,11 +155,22 @@ def login_screen():
 
 def main_menu():
     st.sidebar.title("Menu"); st.sidebar.subheader("💾 Backup")
-    if os.path.exists(DB_FILE): with open(DB_FILE,"rb") as f: st.sidebar.download_button("⬇️ BAIXAR DADOS",f,"backup.db")
+    
+    # --- CORREÇÃO DA SINTAXE DE BACKUP ---
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "rb") as f:
+            st.sidebar.download_button("⬇️ BAIXAR DADOS", f, "backup.db")
+            
     up=st.sidebar.file_uploader("RESTORE",type=["db"])
     if up and st.sidebar.button("CONFIRMAR IMPORTAÇÃO DE DADOS"):
-        try: open(DB_FILE,"wb").write(up.getbuffer()); st.sidebar.success("✅ Sucesso! Reiniciando..."); time.sleep(2); st.rerun()
-        except Exception as e: st.sidebar.error(f"❌ {e}")
+        try: 
+            open(DB_FILE,"wb").write(up.getbuffer())
+            st.sidebar.success("✅ Sucesso! Reiniciando...")
+            time.sleep(2)
+            st.rerun()
+        except Exception as e: 
+            st.sidebar.error(f"❌ {e}")
+            
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
 
@@ -248,11 +291,10 @@ def main_menu():
             if c2.button("🏫 TURMA",use_container_width=True): st.session_state.update(modo='turma', res_tur=False)
         
         if st.session_state.get('modo')=='aluno':
-            # REMOVIDO BOTÃO VOLTAR DAQUI PARA DENTRO DO FORM
             df=get_all_alunos()
             if not df.empty:
                 df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Aluno",df['l'].unique()); idx=int(df[df['l']==s].iloc[0]['id'])
-                realizar_venda_form(idx, origin='aluno') # PASSA ORIGEM
+                realizar_venda_form(idx, origin='aluno')
             else: st.warning("Sem alunos.")
         
         elif st.session_state.get('modo')=='turma':
@@ -279,10 +321,9 @@ def main_menu():
                             c1,c2,c3=st.columns([3,1,1]); c1.write(r['nome']); c2.markdown(f"<span style='color:{'green' if r['saldo']>=0 else 'red'}'>{r['saldo']:.2f}</span>",unsafe_allow_html=True)
                             if c3.button("VENDER",key=r['id']): st.session_state['aid_venda']=r['id']; st.rerun()
                             st.markdown("<hr style='margin:5px 0'>",unsafe_allow_html=True)
-                        if st.button("⬅️ Voltar"): st.session_state['t_sel']=None; st.rerun() # Voltar para seleção de turma
+                        if st.button("⬅️ Voltar"): st.session_state['t_sel']=None; st.rerun()
                     else:
-                        # REMOVIDO BOTÃO CANCELAR DAQUI PARA DENTRO DO FORM
-                        realizar_venda_form(st.session_state['aid_venda'], origin='turma') # PASSA ORIGEM
+                        realizar_venda_form(st.session_state['aid_venda'], origin='turma')
 
     # --- HISTÓRICO ---
     if menu == 'hist':
@@ -305,10 +346,8 @@ def main_menu():
     # --- RELATÓRIOS ---
     if menu == 'relatorios':
         st.markdown("---"); st.subheader("📊 Relatórios")
-        data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY")
-        d_str = data_sel.strftime("%d/%m/%Y")
+        data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
-        
         c1, c2 = st.columns(2)
         if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
         if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
@@ -326,7 +365,7 @@ def main_menu():
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
             else: st.info("Nada vendido.")
 
-# --- FUNÇÃO DE VENDA ATUALIZADA (COM VOLTAR) ---
+# --- FUNÇÃO DE VENDA ATUALIZADA ---
 def realizar_venda_form(aid, origin=None):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
     st.markdown(f"**{al['nome']}** | Saldo: R$ {al['saldo']:.2f}"); df=get_all_alimentos()
@@ -346,7 +385,7 @@ def realizar_venda_form(aid, origin=None):
         st.markdown("---")
         c_conf, c_voltar = st.columns(2)
         with c_conf: confirm = st.form_submit_button("✅ CONFIRMAR", type="primary")
-        with c_voltar: back = st.form_submit_button("⬅️ VOLTAR") # AGORA É SUBMIT BUTTON
+        with c_voltar: back = st.form_submit_button("⬅️ VOLTAR")
         
         if confirm:
             t=0; its=[]
@@ -358,8 +397,8 @@ def realizar_venda_form(aid, origin=None):
             else: st.warning("Selecione algo.")
         
         if back:
-            if origin == 'aluno': st.session_state['modo_compra'] = None # Volta para menu inicial de comprar
-            if origin == 'turma': st.session_state['aid_venda'] = None # Volta para lista da turma
+            if origin == 'aluno': st.session_state['modo_compra'] = None
+            if origin == 'turma': st.session_state['aid_venda'] = None
             st.rerun()
 
 if st.session_state['logado']: main_menu()
