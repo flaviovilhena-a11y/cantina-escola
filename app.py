@@ -4,7 +4,7 @@ import sqlite3
 import shutil
 import os
 import binascii
-import time  # <--- ADICIONADO AQUI
+import time
 from datetime import datetime, timedelta, date
 from collections import Counter
 
@@ -48,7 +48,7 @@ def init_db():
     conn.commit()
     conn.close()
 
-# --- CLASSE PARA GERAR O PAYLOAD PIX (BR CODE - ESTÁTICO) ---
+# --- CLASSE PARA GERAR O PAYLOAD PIX (BR CODE) ---
 class PixPayload:
     def __init__(self, chave, nome, cidade, valor, txid="***"):
         self.chave = chave
@@ -75,10 +75,7 @@ class PixPayload:
     def gerar_payload(self):
         payload = (
             self._fmt("00", "01") +
-            self._fmt("26", 
-                self._fmt("00", "BR.GOV.BCB.PIX") + 
-                self._fmt("01", self.chave)
-            ) +
+            self._fmt("26", self._fmt("00", "BR.GOV.BCB.PIX") + self._fmt("01", self.chave)) +
             self._fmt("52", "0000") +
             self._fmt("53", "986") +
             self._fmt("54", self.valor) +
@@ -230,20 +227,29 @@ def get_relatorio_alunos_dia(data_filtro):
         FROM transacoes t 
         JOIN alunos a ON t.aluno_id = a.id 
         WHERE t.data_hora LIKE ? 
-        ORDER BY t.data_hora DESC
+        ORDER BY t.data_hora ASC
     '''
     try:
         df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
         if not df.empty:
             df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
             df = df[['Hora', 'nome', 'itens', 'valor_total']]
-            df.columns = ['Hora', 'Aluno', 'Produtos', 'Valor (R$)']
+            df.columns = ['Hora', 'Aluno', 'Produtos', 'Valor']
+            
+            total_geral = df['Valor'].sum()
+            linha_total = pd.DataFrame([{
+                'Hora': '', 
+                'Aluno': 'TOTAL GERAL', 
+                'Produtos': '', 
+                'Valor': total_geral
+            }])
+            df = pd.concat([df, linha_total], ignore_index=True)
     except:
         df = pd.DataFrame()
     conn.close()
     return df
 
-# --- FUNÇÕES DE ALIMENTOS E ALUNOS (CRUD) ---
+# --- FUNÇÕES DE ALIMENTOS E ALUNOS ---
 def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('INSERT INTO alimentos (nome, valor, tipo) VALUES (?, ?, ?)', (nome, valor, tipo)); conn.commit(); conn.close()
 def update_alimento_db(id, nome, valor, tipo):
@@ -292,7 +298,7 @@ def main_menu():
             with open(DB_FILE, "wb") as f:
                 f.write(up.getbuffer())
             st.sidebar.success("✅ Dados importados com sucesso! Reiniciando...")
-            time.sleep(2) # Pausa de 2 segundos para ler a mensagem
+            time.sleep(2)
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao importar: {e}")
@@ -306,7 +312,7 @@ def main_menu():
     with c1: 
         if st.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
     with c2: 
-        if st.button("COMPRAR REFEIÇÃO",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
+        if st.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None) # <-- ALTERADO
     with c3: 
         if st.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None)
     with c4: 
@@ -463,10 +469,12 @@ def main_menu():
                 if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
                 else: st.info("Vazio.")
 
-    # --- RELATÓRIOS ---
+    # --- RELATÓRIOS (ATUALIZADO) ---
     if menu == 'relatorios':
         st.markdown("---"); st.subheader("📊 Relatórios")
-        data_sel = st.date_input("Data:", datetime.now()); d_str = data_sel.strftime("%d/%m/%Y")
+        
+        data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY")
+        d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
         
         c1, c2 = st.columns(2)
@@ -477,14 +485,13 @@ def main_menu():
             df_p, tot = get_relatorio_produtos(d_str)
             if not df_p.empty:
                 st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
-                st.dataframe(df_p, hide_index=True, use_container_width=True)
+                st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
             else: st.info("Nada vendido.")
         
         elif st.session_state.get('rel_mode') == 'alunos':
             df_a = get_relatorio_alunos_dia(d_str)
             if not df_a.empty:
-                st.metric("Total do Dia (Real)", f"R$ {df_a['Valor (R$)'].sum():.2f}")
-                st.dataframe(df_a, hide_index=True, use_container_width=True)
+                st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
             else: st.info("Nada vendido.")
 
 def realizar_venda_form(aid,mode=False):
