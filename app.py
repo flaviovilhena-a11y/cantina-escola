@@ -5,6 +5,8 @@ import shutil
 import os
 import binascii
 import time
+import requests # <--- NOVO: Para falar com a API do Brevo
+import threading # <--- NOVO: Para enviar sem travar a tela
 from datetime import datetime, timedelta, date
 from collections import Counter
 
@@ -12,7 +14,15 @@ from collections import Counter
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
 
 # ==========================================
-#    CONFIGURAÇÃO DO PIX (QR CODE ESTÁTICO)
+#    CONFIGURAÇÃO DO BREVO (E-MAIL) - PREENCHA AQUI!
+# ==========================================
+BREVO_API_KEY = "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" # <--- COLE SUA CHAVE DO BREVO AQUI DENTRO DAS ASPAS
+EMAIL_REMETENTE = "cantina@peixinhodourado.g12.br" # <--- SEU E-MAIL CADASTRADO NO BREVO
+NOME_REMETENTE = "Cantina Peixinho Dourado"
+# ==========================================
+
+# ==========================================
+#    CONFIGURAÇÃO DO PIX
 # ==========================================
 CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com" 
 NOME_BENEFICIARIO = "FLAVIO SILVA"
@@ -36,6 +46,58 @@ def init_db():
     try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT"); c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
     except: pass
     conn.commit(); conn.close()
+
+# --- FUNÇÃO DE ENVIO DE E-MAIL (THREAD) ---
+def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
+    """Função que roda em segundo plano para não travar o sistema"""
+    if not email_destino or "@" not in str(email_destino):
+        return # Não faz nada se não tiver e-mail válido
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": BREVO_API_KEY,
+        "content-type": "application/json"
+    }
+    payload = {
+        "sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE},
+        "to": [{"email": email_destino, "name": nome_aluno}],
+        "subject": assunto,
+        "htmlContent": f"""
+        <html><body>
+            <h3>Olá, responsável por {nome_aluno}!</h3>
+            <p>{mensagem_html}</p>
+            <hr>
+            <p style='font-size:12px; color:gray'>Este é um aviso automático da Cantina Peixinho Dourado.</p>
+        </body></html>
+        """
+    }
+    
+    try:
+        response = requests.post(url, json=payload, headers=headers)
+        # Para debug (opcional): print(response.text)
+    except Exception as e:
+        print(f"Erro ao enviar email: {e}")
+
+def disparar_alerta(aluno_id, tipo, valor, detalhes):
+    """Busca o email do aluno e dispara a thread"""
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,))
+        dados = c.fetchone()
+        conn.close()
+
+        if dados:
+            nome, email, saldo_atual = dados
+            if email and len(email) > 5:
+                assunto = f"🔔 Cantina: Nova {tipo} de R$ {valor:.2f}"
+                msg = f"Uma <b>{tipo}</b> foi realizada agora.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}"
+                
+                # Inicia o processo em paralelo (fundo)
+                threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, assunto, msg)).start()
+    except:
+        pass # Silencia erros para não parar o sistema
 
 # --- CLASSE PIX ---
 class PixPayload:
@@ -64,6 +126,21 @@ def get_alunos_por_turma(t):
     df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,))
     conn.close(); return df
 
+def get_vendas_hoje_turma(t): 
+    conn=sqlite3.connect(DB_FILE)
+    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
+    conn.close(); return df
+
+def get_historico_preferencias(aid):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
+    for row in r: 
+        if row[0]: 
+            for i in row[0].split(", "): 
+                try: cnt[i.split("x ")[1]]+=int(i.split("x ")[0])
+                except: pass
+    return cnt
+
+# --- FUNÇÕES DB (ESCRITA) ---
 def update_saldo_aluno(id,s): 
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id))
@@ -81,33 +158,29 @@ def registrar_recarga(aid,v,m,n=None):
     c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid))
     conn.commit(); conn.close()
 
-def get_vendas_hoje_turma(t): 
-    conn=sqlite3.connect(DB_FILE)
-    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
-    conn.close(); return df
+def cancelar_venda_db(tid, aid, valor):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("DELETE FROM transacoes WHERE id = ?", (tid,))
+    c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]
+    c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid))
+    conn.commit(); conn.close()
 
-def get_historico_preferencias(aid):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
-    for row in r: 
-        if row[0]: 
-            for i in row[0].split(", "): 
-                try: cnt[i.split("x ")[1]]+=int(i.split("x ")[0])
-                except: pass
-    return cnt
+# --- FUNÇÕES DE FILTRO E RELATÓRIO ---
+def calcular_data_corte(filtro):
+    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if filtro == "HOJE": return hoje
+    elif filtro == "7 DIAS": return hoje - timedelta(days=7)
+    elif filtro == "30 DIAS": return hoje - timedelta(days=30)
+    return None
 
 def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close()
     
-    # Lógica de Filtro Unificada
-    dc = None
-    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    if filtro == "HOJE": dc = hoje
-    elif filtro == "7 DIAS": dc = hoje - timedelta(days=7)
-    elif filtro == "30 DIAS": dc = hoje - timedelta(days=30)
-    
+    dc = calcular_data_corte(filtro)
     ext = []
+    
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"COMPRA","Descrição":i[1],"Valor":-i[2]})
@@ -119,14 +192,8 @@ def get_extrato_aluno(aid, filtro):
 
 def get_vendas_cancelar(aid, filtro):
     conn=sqlite3.connect(DB_FILE)
-    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-    dc = None
-    if filtro == "HOJE": dc = hoje
-    elif filtro == "7 DIAS": dc = hoje - timedelta(days=7)
-    elif filtro == "30 DIAS": dc = hoje - timedelta(days=30)
-
+    dc = calcular_data_corte(filtro)
     try:
-        # Busca todas e filtra no python para simplificar data string
         query = "SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC"
         df = pd.read_sql_query(query, conn, params=(aid,))
         if not df.empty and dc:
@@ -135,14 +202,6 @@ def get_vendas_cancelar(aid, filtro):
     except: df = pd.DataFrame()
     conn.close(); return df
 
-def cancelar_venda_db(tid, aid, valor):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("DELETE FROM transacoes WHERE id = ?", (tid,))
-    c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]
-    c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid))
-    conn.commit(); conn.close()
-
-# --- FUNÇÕES RELATÓRIO ---
 def get_relatorio_produtos(data_filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{data_filtro}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
     for r in rs:
@@ -168,30 +227,16 @@ def get_relatorio_alunos_dia(data_filtro):
 
 def get_relatorio_recargas_dia(data_filtro):
     conn = sqlite3.connect(DB_FILE)
-    query = '''
-        SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor 
-        FROM recargas r 
-        JOIN alunos a ON r.aluno_id = a.id 
-        WHERE r.data_hora LIKE ? 
-        ORDER BY r.data_hora ASC
-    '''
+    query = '''SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor FROM recargas r JOIN alunos a ON r.aluno_id = a.id WHERE r.data_hora LIKE ? ORDER BY r.data_hora ASC'''
     try:
         df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
         if not df.empty:
-            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
-            df = df[['Hora', 'nome', 'metodo_pagamento', 'valor']]
-            df.columns = ['Hora', 'Aluno', 'Método', 'Valor']
-            
-            # Adiciona linha de total
-            total = df['Valor'].sum()
-            linha_total = pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':total}])
-            df = pd.concat([df, linha_total], ignore_index=True)
-    except:
-        df = pd.DataFrame()
-    conn.close()
-    return df
+            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1]); df = df[['Hora', 'nome', 'metodo_pagamento', 'valor']]; df.columns = ['Hora', 'Aluno', 'Método', 'Valor']
+            df = pd.concat([df, pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':df['Valor'].sum()}])], ignore_index=True)
+    except: df = pd.DataFrame()
+    conn.close(); return df
 
-# --- CRUD ---
+# --- CRUD ALIMENTOS/ALUNOS ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
 def update_alimento_db(id,n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alimentos SET nome=?,valor=?,tipo=? WHERE id=?',(n,v,t,id)); conn.commit(); conn.close()
 def delete_alimento_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('DELETE FROM alimentos WHERE id=?',(id,)); conn.commit(); conn.close()
@@ -318,7 +363,10 @@ def main_menu():
                 st.info("Recarga Manual")
                 with st.form("rman"):
                     v=st.number_input("Valor R$",0.0,step=5.0); m=st.selectbox("Forma",["DINHEIRO", "PIX (MANUAL)", "DÉBITO", "CRÉDITO"])
-                    if st.form_submit_button("CONFIRMAR") and v>0: registrar_recarga(id_a,v,m); st.success("Sucesso!"); st.rerun()
+                    if st.form_submit_button("CONFIRMAR"):
+                        registrar_recarga(id_a,v,m)
+                        disparar_alerta(id_a, "Recarga", v, f"Forma: {m}")
+                        st.success("Sucesso!"); st.rerun()
             
             elif st.session_state.get('rec_mode')=='pix':
                 st.info("Gerar QR Code Estático")
@@ -330,7 +378,10 @@ def main_menu():
                     c_qr, c_txt = st.columns([1, 2])
                     with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
                     with c_txt: st.code(payload); st.warning("Confira o comprovante.")
-                    if st.button("✅ CONFIRMAR PIX"): registrar_recarga(id_a, v, "PIX (QR)"); st.success("Creditado!"); st.rerun()
+                    if st.button("✅ CONFIRMAR PIX"):
+                        registrar_recarga(id_a, v, "PIX (QR)")
+                        disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code")
+                        st.success("Creditado!"); st.rerun()
         else: st.warning("Sem alunos.")
 
     # --- COMPRAR ---
@@ -413,7 +464,9 @@ def main_menu():
                     if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
                         id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", ""))
                         valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
-                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno); st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
+                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
+                        disparar_alerta(id_aluno, "Estorno/Cancelamento", valor_estorno, "Venda cancelada pelo operador")
+                        st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
                 else: st.warning("Nenhuma venda encontrada.")
         else: st.warning("Sem alunos.")
 
@@ -474,6 +527,7 @@ def realizar_venda_form(aid, origin=None):
                 if q>0: it=df[df['id']==i].iloc[0]; t+=it['valor']*q; its.append(f"{q}x {it['nome']}")
             if t>0: 
                 update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
+                disparar_alerta(aid, "Compra", t, ", ".join(its))
                 st.success("OK!"); st.session_state['aid_venda']=None; st.rerun()
             else: st.warning("Selecione algo.")
         
