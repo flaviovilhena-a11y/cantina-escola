@@ -312,7 +312,7 @@ def main_menu():
     with c1: 
         if st.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
     with c2: 
-        if st.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None) # <-- ALTERADO
+        if st.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
     with c3: 
         if st.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None)
     with c4: 
@@ -345,7 +345,9 @@ def main_menu():
                 if st.button("CONFIRMAR"): delete_alimento_db(id); st.success("Apagado!"); st.rerun()
 
         if st.session_state.get('sub') == 'user':
-            act=st.radio("Ação",["IMPORTAR CSV","NOVO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
+            # --- MUDANÇA NOVO -> NOVO ALUNO ---
+            act=st.radio("Ação",["IMPORTAR CSV","NOVO ALUNO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
+            
             if act=="IMPORTAR CSV":
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
@@ -357,9 +359,12 @@ def main_menu():
                             upsert_aluno(r.get('Aluno',''),'',r.get('Turma',''),'',None,r.get('E-mail',''),None,None,None,0.0); b.progress((i+1)/len(df))
                         st.success(f"{n} novos, {a} atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
-            elif act=="NOVO":
+            
+            # --- CONDICIONAL ATUALIZADA ---
+            elif act=="NOVO ALUNO":
                 with st.form("nal"):
                     nm=st.text_input("Nome"); t=st.text_input("Turma"); s=st.number_input("Saldo",0.0); st.form_submit_button("SALVAR", on_click=lambda: upsert_aluno(nm,'',t,'',None,'',None,None,None,s))
+            
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
@@ -469,7 +474,7 @@ def main_menu():
                 if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
                 else: st.info("Vazio.")
 
-    # --- RELATÓRIOS (ATUALIZADO) ---
+    # --- RELATÓRIOS ---
     if menu == 'relatorios':
         st.markdown("---"); st.subheader("📊 Relatórios")
         
