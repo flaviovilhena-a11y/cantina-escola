@@ -133,11 +133,10 @@ def get_extrato_aluno(aid, filtro):
             if itens_str:
                 for item in itens_str.split(", "):
                     try:
-                        qtd, nome = item.split("x ")
-                        p_unit = preco_map.get(nome, 0.0)
-                        itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
+                        qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_com_preco.append(item)
-            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":", ".join(itens_com_preco),"Valor":-i[2]})
+            desc_final = ", ".join(itens_com_preco)
+            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":desc_final,"Valor":-i[2]})
             
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
@@ -217,6 +216,56 @@ def get_relatorio_recargas_dia(df):
             d = pd.concat([d, pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':d['Valor'].sum()}])], ignore_index=True)
     except: d = pd.DataFrame()
     conn.close(); return d
+
+# --- FUNCIONALIDADE DE IMPRESSÃO ---
+def acionar_impressao(tipo="laser"):
+    if tipo == "laser":
+        # CSS para Impressão A4 Padrão
+        st.markdown("""
+            <style>
+            @media print {
+                [data-testid="stSidebar"], .stButton, .stRadio, header, footer {display: none !important;}
+                .block-container {padding: 1cm !important;}
+                body {font-size: 12pt;}
+            }
+            </style>
+            <script>window.parent.print()</script>
+        """, unsafe_allow_html=True)
+        components.html("<script>window.parent.print()</script>", height=0)
+        
+    elif tipo == "termica":
+        # CSS para Impressão Térmica (Bematech 80mm)
+        st.markdown("""
+            <style>
+            @media print {
+                @page { margin: 0; size: 80mm auto; }
+                [data-testid="stSidebar"], .stButton, .stRadio, header, footer {display: none !important;}
+                .block-container {
+                    padding: 0 !important; 
+                    margin: 0 !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                }
+                body {
+                    width: 80mm;
+                    margin: 0;
+                    font-family: 'Courier New', monospace;
+                    font-size: 10px;
+                }
+                h1, h2, h3 { font-size: 12px !important; text-align: center; margin: 5px 0; }
+                p, div { font-size: 10px !important; }
+                table { width: 100% !important; border-collapse: collapse; }
+                th, td { 
+                    border-bottom: 1px dashed #000; 
+                    padding: 2px !important; 
+                    font-size: 9px !important; 
+                    text-align: left;
+                }
+                .stDataFrame { border: none !important; }
+            }
+            </style>
+        """, unsafe_allow_html=True)
+        components.html("<script>window.parent.print()</script>", height=0)
 
 # --- CRUD ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
@@ -441,6 +490,11 @@ def main_menu():
                         ext=get_extrato_aluno(al['id'], filt)
                         if not ext.empty: 
                             st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                            
+                            # Botões de Impressão para Extrato
+                            c_p1, c_p2 = st.columns(2)
+                            if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
+                            if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
                         else: st.info("Vazio.")
 
             elif st.session_state.get('hist_mode') == 'cancel':
@@ -464,18 +518,6 @@ def main_menu():
     # --- RELATÓRIOS ---
     if menu == 'relatorios':
         st.markdown("---"); st.subheader("📊 Relatórios")
-        
-        # CSS Mágico para impressão perfeita
-        st.markdown("""
-            <style>
-            @media print {
-                [data-testid="stSidebar"], .stButton, button {display: none !important;}
-                .block-container {padding: 0 !important;}
-                .stDataFrame {overflow: visible !important; height: auto !important;}
-            }
-            </style>
-        """, unsafe_allow_html=True)
-
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
         c1, c2, c3 = st.columns(3)
@@ -499,20 +541,26 @@ def main_menu():
                         st.dataframe(df_t, column_config={"Total": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                 else: st.info("Nada vendido.")
             
-            if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.parent.print()</script>", height=0)
+            c_p1, c_p2 = st.columns(2)
+            if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
+            if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
         
         elif st.session_state.get('rel_mode') == 'alunos':
             df_a = get_relatorio_alunos_dia(d_str)
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.parent.print()</script>", height=0)
+                c_p1, c_p2 = st.columns(2)
+                if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
+                if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
             else: st.info("Nada vendido.")
 
         elif st.session_state.get('rel_mode') == 'recargas':
             df_r = get_relatorio_recargas_dia(d_str)
             if not df_r.empty:
                 st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.parent.print()</script>", height=0)
+                c_p1, c_p2 = st.columns(2)
+                if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
+                if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
             else: st.info("Nenhuma recarga.")
 
 # --- FUNÇÃO DE VENDA ---
