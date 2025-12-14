@@ -57,7 +57,6 @@ class PDFTermico(FPDF):
             for df in dados.values(): linhas += len(df) + 4 
         else:
             linhas = len(dados)
-            
         altura_estimada = 40 + (linhas * 6)
         super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
         self.titulo = titulo
@@ -72,95 +71,159 @@ class PDFTermico(FPDF):
         self.set_font('Courier', '', 8)
         self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
         self.cell(0, 4, f'{datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
-        self.ln(2)
-        self.cell(0, 0, border="T", ln=1)
-        self.ln(2)
+        self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
         self.set_font('Courier', 'B', 9)
         self.multi_cell(0, 4, self.titulo.upper(), 0, 'C')
         self.ln(2)
 
-    def footer(self):
-        self.set_y(-10)
-        self.set_font('Courier', 'I', 6)
-        self.cell(0, 4, 'Sistema de Gestao Escolar', 0, 0, 'C')
-
     def gerar_relatorio(self):
-        if self.modo == "turmas":
-            self._gerar_por_turma()
-        else:
-            self._gerar_simples()
+        if self.modo == "turmas": self._gerar_por_turma()
+        else: self._gerar_simples()
 
     def _gerar_simples(self):
         self.set_font('Courier', 'B', 7)
         cols = self.dados.columns.tolist()
-        largura_util = 76
-        largura_col = largura_util / len(cols)
-        
-        # Cabeçalhos
+        largura_col = 76 / len(cols)
         for col in cols:
-            # Alinha numeros (Qtd e Valor) a direita, Texto a esquerda
             align = 'R' if 'Qtd' in str(col) or 'Valor' in str(col) else 'L'
             self.cell(largura_col, 4, str(col)[:15], 0, 0, align)
         self.ln()
-        
         self.set_font('Courier', '', 7)
         for index, row in self.dados.iterrows():
             for col in cols:
                 valor = str(row[col])
-                align = 'L' # Padrão Esquerda
-                
-                # Se for número (Valor ou Qtd), formata e alinha à Direita
+                align = 'L'
                 if 'Valor' in col or 'Total' in col:
-                    if isinstance(row[col], (int, float)):
-                        valor = f"{row[col]:.2f}"
+                    if isinstance(row[col], (int, float)): valor = f"{row[col]:.2f}"
                     align = 'R'
-                elif 'Qtd' in col:
-                    align = 'R'
-                
+                elif 'Qtd' in col: align = 'R'
                 self.cell(largura_col, 4, valor[:20], 0, 0, align)
             self.ln()
-        self.ln(4)
-        self.cell(0, 0, border="T", ln=1)
+        self.ln(4); self.cell(0, 0, border="T", ln=1)
 
     def _gerar_por_turma(self):
         for turma, df in self.dados.items():
-            self.set_font('Courier', 'B', 9)
-            self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L')
-            self.cell(0, 0, border="T", ln=1)
-            
-            self.set_font('Courier', 'B', 7)
-            self.cell(60, 4, "PRODUTO", 0, 0, 'L')
-            self.cell(16, 4, "QTD", 0, 1, 'R')
-            
+            self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
+            self.set_font('Courier', 'B', 7); self.cell(60, 4, "PRODUTO", 0, 0, 'L'); self.cell(16, 4, "QTD", 0, 1, 'R')
             self.set_font('Courier', '', 7)
+            for index, row in df.iterrows():
+                if str(row['Produto']) == "TOTAL TURMA": continue
+                self.cell(60, 4, str(row['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(row['Qtd']), 0, 1, 'R')
+            self.ln(2); self.cell(0, 0, border="B", ln=1); self.ln(2)
+
+# --- CLASSE PARA GERAR PDF A4 (LASER) ---
+class PDFA4(FPDF):
+    def __init__(self, titulo):
+        super().__init__(orientation='P', unit='mm', format='A4')
+        self.titulo = titulo
+        self.set_margins(10, 10, 10)
+        self.add_page()
+
+    def header(self):
+        self.set_font('Arial', 'B', 14)
+        self.cell(0, 10, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, 6, f'Relatório: {self.titulo}', 0, 1, 'C')
+        self.cell(0, 6, f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        self.ln(5)
+        self.line(10, 35, 200, 35)
+        self.ln(5)
+
+    def footer(self):
+        self.set_y(-15)
+        self.set_font('Arial', 'I', 8)
+        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+
+    def tabela_simples(self, df):
+        self.set_font('Arial', 'B', 9)
+        cols = df.columns.tolist()
+        largura_col = 190 / len(cols) # 190mm largura útil A4
+        
+        # Cabeçalho
+        for col in cols:
+            align = 'R' if 'Valor' in col or 'Qtd' in col or 'Total' in col else 'L'
+            self.cell(largura_col, 8, str(col), 1, 0, 'C', fill=False)
+        self.ln()
+        
+        # Dados
+        self.set_font('Arial', '', 9)
+        for index, row in df.iterrows():
+            for col in cols:
+                valor = str(row[col])
+                align = 'L'
+                if 'Valor' in col or 'Total' in col:
+                    if isinstance(row[col], (int, float)): valor = f"R$ {row[col]:.2f}"
+                    align = 'R'
+                elif 'Qtd' in col:
+                    align = 'R'
+                self.cell(largura_col, 7, valor[:40], 1, 0, align)
+            self.ln()
+
+    def tabela_agrupada(self, dados_dict):
+        for turma, df in dados_dict.items():
+            self.set_font('Arial', 'B', 11)
+            self.cell(0, 10, f"TURMA: {turma}", 0, 1, 'L')
             
+            self.set_font('Arial', 'B', 9)
+            self.cell(100, 7, "PRODUTO", 1, 0, 'L')
+            self.cell(30, 7, "QTD", 1, 0, 'C')
+            self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
+            
+            self.set_font('Arial', '', 9)
             for index, row in df.iterrows():
                 produto = str(row['Produto'])
-                if produto == "TOTAL TURMA":
-                    continue 
                 qtd = str(row['Qtd'])
-                self.cell(60, 4, produto[:30], 0, 0, 'L')
-                self.cell(16, 4, qtd, 0, 1, 'R')
-            
-            self.ln(2)
-            self.cell(0, 0, border="B", ln=1)
-            self.ln(2)
+                total = f"R$ {row['Total']:.2f}"
+                
+                # Destaca a linha de total
+                if produto == "TOTAL TURMA":
+                    self.set_font('Arial', 'B', 9)
+                    self.cell(130, 7, "TOTAL DA TURMA", 1, 0, 'R')
+                    self.cell(60, 7, total, 1, 1, 'R')
+                else:
+                    self.set_font('Arial', '', 9)
+                    self.cell(100, 7, produto, 1, 0, 'L')
+                    self.cell(30, 7, qtd, 1, 0, 'C')
+                    self.cell(60, 7, total, 1, 1, 'R')
+            self.ln(5)
 
-# --- FUNÇÕES HELPER PARA DOWNLOAD PDF ---
+# --- HELPER DOWNLOAD A4 ---
+def criar_botao_pdf_a4(dados, titulo, modo="simples"):
+    vazio = False
+    if isinstance(dados, pd.DataFrame):
+        if dados.empty: vazio = True
+    elif not dados: vazio = True
+    if vazio: return
+
+    try:
+        pdf = PDFA4(titulo)
+        if modo == "turmas":
+            pdf.tabela_agrupada(dados)
+        else:
+            pdf.tabela_simples(dados)
+            
+        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore')
+        st.download_button(
+            label="🖨️ BAIXAR PDF LASER (A4)",
+            data=pdf_bytes,
+            file_name=f"relatorio_a4_{int(time.time())}.pdf",
+            mime="application/pdf",
+        )
+    except Exception as e:
+        st.error(f"Erro PDF A4: {e}")
+
+# --- HELPER DOWNLOAD TÉRMICO ---
 def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
     vazio = False
     if isinstance(dados, pd.DataFrame):
         if dados.empty: vazio = True
-    elif not dados: 
-        vazio = True
-        
+    elif not dados: vazio = True
     if vazio: return
 
     try:
         pdf = PDFTermico(titulo_relatorio, dados, modo)
         pdf.gerar_relatorio()
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore') 
-        
         st.download_button(
             label="🧾 BAIXAR PDF TÉRMICO (Bematech)",
             data=pdf_bytes,
@@ -168,8 +231,7 @@ def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
             mime="application/pdf",
             type="primary"
         )
-    except Exception as e:
-        st.error(f"Erro ao gerar PDF: {e}")
+    except Exception as e: st.error(f"Erro PDF Termico: {e}")
 
 # --- FUNÇÃO DE ENVIO DE E-MAIL (THREAD) ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
@@ -258,8 +320,7 @@ def get_extrato_aluno(aid, filtro):
                     try:
                         qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_com_preco.append(item)
-            desc_final = ", ".join(itens_com_preco)
-            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":desc_final,"Valor":-i[2]})
+            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":", ".join(itens_com_preco),"Valor":-i[2]})
             
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
@@ -339,23 +400,6 @@ def get_relatorio_recargas_dia(df):
             d = pd.concat([d, pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':d['Valor'].sum()}])], ignore_index=True)
     except: d = pd.DataFrame()
     conn.close(); return d
-
-# --- FUNCIONALIDADE DE IMPRESSÃO (NOVA JANELA) ---
-def acionar_impressao_js():
-    st.components.v1.html(
-        """<script>
-        var w = window.open();
-        w.document.write('<html><head><title>Relatorio</title>');
-        w.document.write('<style>body{font-family:sans-serif;} table{width:100%;border-collapse:collapse;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} tr:nth-child(even){background-color:#f2f2f2;} th{background-color:#04AA6D;color:white;}</style>');
-        w.document.write('</head><body>');
-        w.document.write(window.parent.document.getElementsByClassName('stDataFrame')[0].innerHTML);
-        w.document.write('</body></html>');
-        w.document.close();
-        w.focus();
-        setTimeout(function(){w.print();}, 1000);
-        </script>""",
-        height=0,
-    )
 
 # --- CRUD ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
@@ -583,6 +627,7 @@ def main_menu():
                             
                             c_p1, c_p2 = st.columns(2)
                             if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                            criar_botao_pdf_a4(ext, f"EXTRATO: {al['nome']}")
                             criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
                         else: st.info("Vazio.")
 
@@ -622,7 +667,7 @@ def main_menu():
                     st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
                     st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                     c1, c2 = st.columns(2)
-                    if c1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                    criar_botao_pdf_a4(df_p, "RELATORIO VENDAS GERAL")
                     criar_botao_pdf_termico(df_p, "RELATORIO VENDAS GERAL")
                 else: st.info("Nada vendido.")
             else:
@@ -637,7 +682,7 @@ def main_menu():
                         df_completo = pd.concat([df_completo, df_t])
                     
                     c1, c2 = st.columns(2)
-                    if c1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                    criar_botao_pdf_a4(res_turmas, "RELATORIO POR TURMA", modo="turmas")
                     criar_botao_pdf_termico(res_turmas, "RELATORIO POR TURMA", modo="turmas")
                 else: st.info("Nada vendido.")
         
@@ -646,7 +691,7 @@ def main_menu():
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                 c_p1, c_p2 = st.columns(2)
-                if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                criar_botao_pdf_a4(df_a, "RELATORIO ALUNOS")
                 criar_botao_pdf_termico(df_a, "RELATORIO ALUNOS")
             else: st.info("Nada vendido.")
 
@@ -655,7 +700,7 @@ def main_menu():
             if not df_r.empty:
                 st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                 c_p1, c_p2 = st.columns(2)
-                if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
                 criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
             else: st.info("Nenhuma recarga.")
 
