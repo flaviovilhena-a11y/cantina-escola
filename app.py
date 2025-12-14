@@ -10,7 +10,7 @@ import threading
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta, date
 from collections import Counter
-from fpdf import FPDF # <--- NECESSÁRIO: pip install fpdf
+from fpdf import FPDF
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
@@ -51,12 +51,20 @@ def init_db():
 
 # --- CLASSE PARA GERAR PDF TÉRMICO (80mm) ---
 class PDFTermico(FPDF):
-    def __init__(self, titulo, dados_df):
-        # Largura 80mm. Altura calculada dinamicamente (10mm cabeçalho + 5mm por linha + 20mm rodapé)
-        altura_estimada = 40 + (len(dados_df) * 6)
+    def __init__(self, titulo, dados, modo="simples"):
+        # Se modo for 'turmas', dados é um dicionário. Se 'simples', é um DataFrame.
+        # Calculamos altura estimada grosseiramente
+        linhas = 0
+        if modo == "turmas":
+            for df in dados.values(): linhas += len(df) + 4 # +4 para cabeçalhos/rodapés de turma
+        else:
+            linhas = len(dados)
+            
+        altura_estimada = 40 + (linhas * 6)
         super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
         self.titulo = titulo
-        self.dados = dados_df
+        self.dados = dados
+        self.modo = modo
         self.set_margins(2, 2, 2)
         self.add_page()
 
@@ -67,7 +75,7 @@ class PDFTermico(FPDF):
         self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
         self.cell(0, 4, f'{datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(2)
-        self.cell(0, 0, border="T", ln=1) # Linha horizontal
+        self.cell(0, 0, border="T", ln=1)
         self.ln(2)
         self.set_font('Courier', 'B', 9)
         self.multi_cell(0, 4, self.titulo.upper(), 0, 'C')
@@ -78,53 +86,85 @@ class PDFTermico(FPDF):
         self.set_font('Courier', 'I', 6)
         self.cell(0, 4, 'Sistema de Gestao Escolar', 0, 0, 'C')
 
-    def gerar_tabela(self):
-        self.set_font('Courier', '', 7)
-        
-        # Cabeçalho da tabela dinâmico
+    def gerar_relatorio(self):
+        if self.modo == "turmas":
+            self._gerar_por_turma()
+        else:
+            self._gerar_simples()
+
+    def _gerar_simples(self):
+        self.set_font('Courier', 'B', 7)
         cols = self.dados.columns.tolist()
-        
-        # Ajuste de largura das colunas para caber em 76mm (80 - 2 - 2)
         largura_util = 76
         largura_col = largura_util / len(cols)
         
-        # Imprime Cabeçalhos
-        self.set_font('Courier', 'B', 7)
         for col in cols:
-            # Trata caracteres para não quebrar no PDF (remove acentos básicos se necessário)
-            txt = str(col)[:15] # Corta nomes muito longos
-            self.cell(largura_col, 4, txt, 0, 0, 'L')
+            self.cell(largura_col, 4, str(col)[:15], 0, 0, 'L')
         self.ln()
         
-        # Imprime Dados
         self.set_font('Courier', '', 7)
         for index, row in self.dados.iterrows():
             for col in cols:
                 valor = str(row[col])
-                # Formatação especial para dinheiro
                 if isinstance(row[col], (int, float)) and ('Valor' in col or 'Total' in col):
                     valor = f"{row[col]:.2f}"
-                
-                # Se for muito longo, corta para não quebrar o layout da térmica
                 self.cell(largura_col, 4, valor[:20], 0, 0, 'L')
             self.ln()
-            
         self.ln(4)
-        self.cell(0, 0, border="T", ln=1) # Linha final
+        self.cell(0, 0, border="T", ln=1)
 
-# --- FUNÇÃO HELPER PARA DOWNLOAD PDF ---
-def criar_botao_pdf_termico(df, titulo_relatorio):
-    if df.empty: return
+    def _gerar_por_turma(self):
+        # Percorre o dicionário { 'Turma A': df, 'Turma B': df }
+        for turma, df in self.dados.items():
+            # 1. Cabeçalho da Turma
+            self.set_font('Courier', 'B', 9)
+            self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L')
+            self.cell(0, 0, border="T", ln=1) # Linha fina
+            
+            # 2. Cabeçalhos Colunas (Produto | Qtd)
+            self.set_font('Courier', 'B', 7)
+            self.cell(60, 4, "PRODUTO", 0, 0, 'L')
+            self.cell(16, 4, "QTD", 0, 1, 'R') # Alinhado a direita
+            
+            # 3. Itens
+            self.set_font('Courier', '', 7)
+            total_financeiro = 0.0
+            
+            for index, row in df.iterrows():
+                produto = str(row['Produto'])
+                
+                # Pega o total financeiro que já vem calculado na linha 'TOTAL TURMA' mas não exibe ela na lista
+                if produto == "TOTAL TURMA":
+                    total_financeiro = row['Total']
+                    continue 
+                
+                qtd = str(row['Qtd'])
+                self.cell(60, 4, produto[:30], 0, 0, 'L')
+                self.cell(16, 4, qtd, 0, 1, 'R')
+            
+            # 4. Totalizador da Turma
+            self.ln(1)
+            self.set_font('Courier', 'B', 8)
+            self.cell(50, 5, "TOTAL VENDIDO:", 0, 0, 'R')
+            self.cell(26, 5, f"R$ {total_financeiro:.2f}", 0, 1, 'R')
+            
+            # Espaço para a próxima turma
+            self.ln(4)
+            self.cell(0, 0, border="B", ln=1) # Linha separadora de turmas
+            self.ln(2)
+
+# --- FUNÇÕES HELPER PARA DOWNLOAD PDF ---
+def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
+    if not dados: return
     try:
-        pdf = PDFTermico(titulo_relatorio, df)
-        pdf.gerar_tabela()
-        # Gera string binária
+        pdf = PDFTermico(titulo_relatorio, dados, modo)
+        pdf.gerar_relatorio()
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore') 
         
         st.download_button(
             label="🧾 BAIXAR PDF TÉRMICO (Bematech)",
             data=pdf_bytes,
-            file_name=f"cupom_{int(time.time())}.pdf",
+            file_name=f"cupom_{modo}_{int(time.time())}.pdf",
             mime="application/pdf",
             type="primary"
         )
@@ -302,7 +342,6 @@ def get_relatorio_recargas_dia(df):
 
 # --- FUNCIONALIDADE DE IMPRESSÃO (NOVA JANELA) ---
 def acionar_impressao_js():
-    # Cria uma nova janela apenas com os dados essenciais para impressão A4
     st.components.v1.html(
         """<script>
         var w = window.open();
@@ -599,7 +638,7 @@ def main_menu():
                     
                     c1, c2 = st.columns(2)
                     if c1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
-                    criar_botao_pdf_termico(df_completo, "RELATORIO POR TURMA")
+                    criar_botao_pdf_termico(res_turmas, "RELATORIO POR TURMA", modo="turmas")
                 else: st.info("Nada vendido.")
         
         elif st.session_state.get('rel_mode') == 'alunos':
