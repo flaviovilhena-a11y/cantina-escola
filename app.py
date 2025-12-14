@@ -8,6 +8,8 @@ import time
 import requests
 import threading
 import streamlit.components.v1 as components
+import random # <--- NOVO
+import string # <--- NOVO
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
@@ -37,9 +39,17 @@ DB_FILE = 'cantina.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL)''')
+    # Tabela Alunos (Com Login e Senha)
+    c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL, login TEXT, senha TEXT)''')
+    
+    # Migrações para garantir que colunas existam
     try: c.execute("ALTER TABLE alunos ADD COLUMN telefone3 TEXT")
     except: pass
+    try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT") # <--- NOVO
+    except: pass
+    try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT") # <--- NOVO
+    except: pass
+    
     c.execute('''CREATE TABLE IF NOT EXISTS alimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, valor REAL, tipo TEXT)''')
     try: c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT"); c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
     except: pass
@@ -49,7 +59,60 @@ def init_db():
     except: pass
     conn.commit(); conn.close()
 
-# --- CLASSE PARA GERAR PDF TÉRMICO (80mm) ---
+# --- FUNÇÃO GERAR CREDENCIAIS ---
+def gerar_senha_aleatoria(tamanho=6):
+    caracteres = string.ascii_letters + string.digits
+    return ''.join(random.choice(caracteres) for i in range(tamanho))
+
+def garantir_credenciais(aluno_id, nome_aluno):
+    """Gera login e senha se não existirem"""
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,))
+    dados = c.fetchone()
+    
+    login_novo = None
+    senha_nova = None
+    
+    if not dados or not dados[0]: # Se não tem login
+        # Cria login: primeiro nome (minusculo) + ID (ex: joao15)
+        primeiro_nome = nome_aluno.split()[0].lower()
+        # Remove acentos básicos do login (opcional, simplificado aqui)
+        primeiro_nome = primeiro_nome.replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').replace('ã','a')
+        login_novo = f"{primeiro_nome}{aluno_id}"
+    else:
+        login_novo = dados[0]
+
+    if not dados or not dados[1]: # Se não tem senha
+        senha_nova = gerar_senha_aleatoria()
+    else:
+        senha_nova = dados[1]
+    
+    # Atualiza no banco
+    c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
+    conn.commit(); conn.close()
+    return login_novo, senha_nova
+
+# --- FUNÇÃO EMAIL CREDENCIAIS ---
+def enviar_credenciais_thread(email, nome, login, senha):
+    if not email or "@" not in str(email): return
+    
+    assunto = "🔑 Seu Acesso - Cantina Peixinho Dourado"
+    msg_html = f"""
+    <html><body>
+        <h3>Olá, responsável por {nome}!</h3>
+        <p>Para acompanhar o saldo e extrato em tempo real, criamos um acesso exclusivo para você.</p>
+        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border: 1px solid #ccc;">
+            <p><b>Login:</b> {login}</p>
+            <p><b>Senha:</b> {senha}</p>
+        </div>
+        <p>Acesse nosso aplicativo para conferir.</p>
+        <hr>
+        <p style='font-size:12px; color:gray'>Cantina Peixinho Dourado</p>
+    </body></html>
+    """
+    enviar_email_brevo_thread(email, nome, assunto, msg_html)
+
+# --- CLASSES E FUNÇÕES PDF (MANTIDAS IGUAIS) ---
 class PDFTermico(FPDF):
     def __init__(self, titulo, dados, modo="simples"):
         linhas = 0
@@ -64,7 +127,6 @@ class PDFTermico(FPDF):
         self.modo = modo
         self.set_margins(2, 2, 2)
         self.add_page()
-
     def header(self):
         self.set_font('Courier', 'B', 10)
         self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
@@ -75,11 +137,9 @@ class PDFTermico(FPDF):
         self.set_font('Courier', 'B', 9)
         self.multi_cell(0, 4, self.titulo.upper(), 0, 'C')
         self.ln(2)
-
     def gerar_relatorio(self):
         if self.modo == "turmas": self._gerar_por_turma()
         else: self._gerar_simples()
-
     def _gerar_simples(self):
         self.set_font('Courier', 'B', 7)
         cols = self.dados.columns.tolist()
@@ -100,7 +160,6 @@ class PDFTermico(FPDF):
                 self.cell(largura_col, 4, valor[:20], 0, 0, align)
             self.ln()
         self.ln(4); self.cell(0, 0, border="T", ln=1)
-
     def _gerar_por_turma(self):
         for turma, df in self.dados.items():
             self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
@@ -111,100 +170,76 @@ class PDFTermico(FPDF):
                 self.cell(60, 4, str(row['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(row['Qtd']), 0, 1, 'R')
             self.ln(2); self.cell(0, 0, border="B", ln=1); self.ln(2)
 
-# --- CLASSE PARA GERAR PDF A4 (LASER) ---
 class PDFA4(FPDF):
     def __init__(self, titulo):
         super().__init__(orientation='P', unit='mm', format='A4')
         self.titulo = titulo
-        self.set_margins(10, 10, 10)
-        self.add_page()
-
+        self.set_margins(10, 10, 10); self.add_page()
     def header(self):
-        self.set_font('Arial', 'B', 14)
-        self.cell(0, 10, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
-        self.set_font('Arial', '', 10)
-        self.cell(0, 6, f'Relatório: {self.titulo}', 0, 1, 'C')
+        self.set_font('Arial', 'B', 14); self.cell(0, 10, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
+        self.set_font('Arial', '', 10); self.cell(0, 6, f'Relatório: {self.titulo}', 0, 1, 'C')
         self.cell(0, 6, f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
-        self.ln(5)
-        self.line(10, 35, 200, 35)
-        self.ln(5)
-
+        self.ln(5); self.line(10, 35, 200, 35); self.ln(5)
     def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
-
+        self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
     def tabela_simples(self, df):
-        self.set_font('Arial', 'B', 9)
-        cols = df.columns.tolist()
-        largura_col = 190 / len(cols)
-        for col in cols:
-            align = 'R' if 'Valor' in col or 'Qtd' in col or 'Total' in col else 'L'
-            self.cell(largura_col, 8, str(col), 1, 0, 'C', fill=False)
-        self.ln()
-        self.set_font('Arial', '', 9)
-        for index, row in df.iterrows():
-            for col in cols:
-                valor = str(row[col])
-                align = 'L'
-                if 'Valor' in col or 'Total' in col:
-                    if isinstance(row[col], (int, float)): valor = f"R$ {row[col]:.2f}"
+        self.set_font('Arial', 'B', 9); cols = df.columns.tolist(); largeur = 190/len(cols)
+        for c in cols: 
+            align = 'R' if 'Valor' in c or 'Qtd' in c or 'Total' in c else 'L'
+            self.cell(largeur, 8, str(c), 1, 0, 'C')
+        self.ln(); self.set_font('Arial', '', 9)
+        for i, r in df.iterrows():
+            for c in cols:
+                v = str(r[c]); align = 'L'
+                if 'Valor' in c or 'Total' in c: 
+                    if isinstance(r[c], (int, float)): v = f"R$ {r[c]:.2f}"
                     align = 'R'
-                elif 'Qtd' in col: align = 'R'
-                self.cell(largura_col, 7, valor[:40], 1, 0, align)
+                elif 'Qtd' in c: align = 'R'
+                self.cell(largeur, 7, v[:40], 1, 0, align)
             self.ln()
-
-    def tabela_agrupada(self, dados_dict):
-        for turma, df in dados_dict.items():
-            self.set_font('Arial', 'B', 11)
-            self.cell(0, 10, f"TURMA: {turma}", 0, 1, 'L')
-            self.set_font('Arial', 'B', 9)
-            self.cell(100, 7, "PRODUTO", 1, 0, 'L'); self.cell(30, 7, "QTD", 1, 0, 'C'); self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
+    def tabela_agrupada(self, dados):
+        for t, df in dados.items():
+            self.set_font('Arial', 'B', 11); self.cell(0, 10, f"TURMA: {t}", 0, 1, 'L')
+            self.set_font('Arial', 'B', 9); self.cell(100, 7, "PRODUTO", 1, 0, 'L'); self.cell(30, 7, "QTD", 1, 0, 'C'); self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
             self.set_font('Arial', '', 9)
-            for index, row in df.iterrows():
-                produto = str(row['Produto']); qtd = str(row['Qtd']); total = f"R$ {row['Total']:.2f}"
-                if produto == "TOTAL TURMA":
-                    self.set_font('Arial', 'B', 9)
-                    self.cell(130, 7, "TOTAL DA TURMA", 1, 0, 'R'); self.cell(60, 7, total, 1, 1, 'R')
+            for i, r in df.iterrows():
+                p=str(r['Produto']); q=str(r['Qtd']); tot=f"R$ {r['Total']:.2f}"
+                if p=="TOTAL TURMA":
+                    self.set_font('Arial','B',9); self.cell(130,7,"TOTAL DA TURMA",1,0,'R'); self.cell(60,7,tot,1,1,'R')
                 else:
-                    self.set_font('Arial', '', 9)
-                    self.cell(100, 7, produto, 1, 0, 'L'); self.cell(30, 7, qtd, 1, 0, 'C'); self.cell(60, 7, total, 1, 1, 'R')
+                    self.set_font('Arial','',9); self.cell(100,7,p,1,0,'L'); self.cell(30,7,q,1,0,'C'); self.cell(60,7,tot,1,1,'R')
             self.ln(5)
 
-# --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     vazio = False
-    if isinstance(dados, pd.DataFrame):
-        if dados.empty: vazio = True
-    elif not dados: vazio = True
+    if isinstance(dados, pd.DataFrame): 
+        if dados.empty: vazio=True
+    elif not dados: vazio=True
     if vazio: return
     try:
         pdf = PDFA4(titulo)
         if modo == "turmas": pdf.tabela_agrupada(dados)
         else: pdf.tabela_simples(dados)
-        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore')
-        st.download_button(label="🖨️ BAIXAR PDF LASER (A4)", data=pdf_bytes, file_name=f"relatorio_a4_{int(time.time())}.pdf", mime="application/pdf")
-    except Exception as e: st.error(f"Erro PDF A4: {e}")
+        st.download_button("🖨️ BAIXAR PDF LASER (A4)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"rel_a4_{int(time.time())}.pdf", "application/pdf")
+    except Exception as e: st.error(f"Erro A4: {e}")
 
-def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
+def criar_botao_pdf_termico(dados, titulo, modo="simples"):
     vazio = False
-    if isinstance(dados, pd.DataFrame):
-        if dados.empty: vazio = True
-    elif not dados: vazio = True
+    if isinstance(dados, pd.DataFrame): 
+        if dados.empty: vazio=True
+    elif not dados: vazio=True
     if vazio: return
     try:
-        pdf = PDFTermico(titulo_relatorio, dados, modo)
-        pdf.gerar_relatorio()
-        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore') 
-        st.download_button(label="🧾 BAIXAR PDF TÉRMICO (Bematech)", data=pdf_bytes, file_name=f"cupom_{modo}_{int(time.time())}.pdf", mime="application/pdf", type="primary")
-    except Exception as e: st.error(f"Erro PDF Termico: {e}")
+        pdf = PDFTermico(titulo, dados, modo); pdf.gerar_relatorio()
+        st.download_button("🧾 BAIXAR PDF TÉRMICO (Bematech)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"cupom_{int(time.time())}.pdf", "application/pdf", type="primary")
+    except Exception as e: st.error(f"Erro Termico: {e}")
 
 # --- EMAIL E ALERTAS ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
     if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
     headers = {"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"}
-    payload = {"sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE}, "to": [{"email": email_destino, "name": nome_aluno}], "subject": assunto, "htmlContent": f"<html><body><h3>Olá, responsável por {nome_aluno}!</h3><p>{mensagem_html}</p><hr><p style='font-size:12px; color:gray'>Aviso automático da Cantina Peixinho Dourado.</p></body></html>"}
+    payload = {"sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE}, "to": [{"email": email_destino, "name": nome_aluno}], "subject": assunto, "htmlContent": mensagem_html}
     try: requests.post(url, json=payload, headers=headers)
     except: pass
 
@@ -214,7 +249,7 @@ def disparar_alerta(aluno_id, tipo, valor, detalhes):
         if dados:
             nome, email, saldo_atual = dados
             if email and len(str(email)) > 5:
-                msg = f"Uma <b>{tipo}</b> foi realizada.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}"
+                msg = f"<html><body><h3>Olá, responsável por {nome}!</h3><p>Uma <b>{tipo}</b> foi realizada.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}</p><hr><p style='font-size:12px; color:gray'>Aviso automático.</p></body></html>"
                 threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, f"🔔 Cantina: {tipo} R$ {valor:.2f}", msg)).start()
     except: pass
 
@@ -266,10 +301,8 @@ def validar_horario_turno(data_hora_str, turno):
     try:
         dt = datetime.strptime(data_hora_str, "%d/%m/%Y %H:%M:%S")
         hora = dt.hour; minuto = dt.minute
-        # Matutino: 06:00 até 11:45 (11:45 incluso)
         if turno == "MATUTINO":
             if hora >= 6 and (hora < 11 or (hora == 11 and minuto <= 45)): return True
-        # Vespertino: 13:00 até 18:00
         elif turno == "VESPERTINO":
             if hora >= 13 and hora <= 18: return True
     except: pass
@@ -312,16 +345,12 @@ def get_vendas_cancelar(aid, filtro):
 
 def get_relatorio_produtos(df_data, turno="DIA INTEIRO"):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    # Adicionado SELECT data_hora
     c.execute("SELECT itens, data_hora FROM transacoes WHERE data_hora LIKE ?",(f"{df_data}%",))
     rs=c.fetchall()
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor']))
     conn.close(); qg=Counter()
-    
     for itens, data_hora in rs:
-        # Filtro de Turno
         if not validar_horario_turno(data_hora, turno): continue
-        
         if itens: 
             for i in itens.split(", "):
                 try: qg[i.split("x ")[1]]+=int(i.split("x ")[0])
@@ -333,7 +362,6 @@ def get_relatorio_produtos(df_data, turno="DIA INTEIRO"):
 
 def get_relatorio_produtos_por_turma(data_filtro, turno="DIA INTEIRO"):
     conn = sqlite3.connect(DB_FILE)
-    # Adicionado t.data_hora
     query = '''SELECT a.turma, t.itens, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id = a.id WHERE t.data_hora LIKE ? ORDER BY a.turma ASC'''
     try:
         rows = conn.execute(query, (f"{data_filtro}%",)).fetchall()
@@ -341,11 +369,8 @@ def get_relatorio_produtos_por_turma(data_filtro, turno="DIA INTEIRO"):
     except: return {}
     conn.close()
     dados_turmas = {}
-    
     for turma, itens, data_hora in rows:
-        # Filtro de Turno
         if not validar_horario_turno(data_hora, turno): continue
-        
         if not turma: turma = "SEM TURMA"
         if turma not in dados_turmas: dados_turmas[turma] = Counter()
         if itens:
@@ -425,6 +450,8 @@ def main_menu():
     if c3.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
     if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
     if c5.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
+    # BOTÃO ACESSO (NOVO)
+    if c6.button("🔑 ACESSO", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
 
     menu=st.session_state.get('menu')
 
@@ -637,7 +664,6 @@ def main_menu():
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
         
-        # Filtro de Turno Adicionado Aqui
         turno_sel = st.radio("Turno:", ["DIA INTEIRO", "MATUTINO", "VESPERTINO"], horizontal=True)
         st.markdown("---")
 
@@ -689,6 +715,71 @@ def main_menu():
                 criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
                 criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
             else: st.info("Nenhuma recarga.")
+
+    # --- NOVO MENU: ACESSO ---
+    if menu == 'acesso':
+        st.markdown("---"); st.subheader("🔑 Gerenciar Acesso dos Alunos")
+        
+        # Opções de envio
+        c1, c2, c3 = st.columns(3)
+        if c1.button("👤 ENVIAR POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
+        if c2.button("🏫 ENVIAR POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
+        if c3.button("📢 ENVIAR PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
+        
+        df_alunos = get_all_alunos()
+        
+        if st.session_state.get('acc_mode') == 'aluno':
+            if not df_alunos.empty:
+                df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
+                sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
+                email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
+                
+                # Gera ou recupera
+                if st.button("GERAR E ENVIAR"):
+                    l, s = garantir_credenciais(id_sel, nome_sel)
+                    if email_sel:
+                        enviar_credenciais_thread(email_sel, nome_sel, l, s)
+                        st.success(f"Enviado para {email_sel}!")
+                        st.info(f"Login: {l} | Senha: {s}")
+                    else:
+                        st.warning("Aluno sem e-mail cadastrado. (Login/Senha gerados, mas não enviados)")
+                        st.info(f"Login: {l} | Senha: {s}")
+            else: st.warning("Sem alunos.")
+
+        elif st.session_state.get('acc_mode') == 'turma':
+            if not df_alunos.empty:
+                turmas = sorted(df_alunos['turma'].dropna().unique())
+                t_sel = st.selectbox("Selecione a Turma:", turmas)
+                
+                if st.button(f"DISPARAR PARA {t_sel}"):
+                    alunos_turma = df_alunos[df_alunos['turma'] == t_sel]
+                    count = 0
+                    bar = st.progress(0)
+                    for i, row in alunos_turma.iterrows():
+                        l, s = garantir_credenciais(row['id'], row['nome'])
+                        if row['email']:
+                            enviar_credenciais_thread(row['email'], row['nome'], l, s)
+                            count += 1
+                        bar.progress((i + 1) / len(alunos_turma))
+                    st.success(f"Processo finalizado! {count} e-mails enviados.")
+            else: st.warning("Sem alunos.")
+
+        elif st.session_state.get('acc_mode') == 'todos':
+            st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos cadastrados.")
+            if st.button("CONFIRMAR ENVIO EM MASSA"):
+                if not df_alunos.empty:
+                    count = 0
+                    bar = st.progress(0)
+                    for i, row in df_alunos.iterrows():
+                        l, s = garantir_credenciais(row['id'], row['nome'])
+                        if row['email']:
+                            enviar_credenciais_thread(row['email'], row['nome'], l, s)
+                            count += 1
+                        bar.progress((i + 1) / len(df_alunos))
+                    st.success(f"Envio em massa concluído! {count} mensagens enviadas.")
+                else: st.warning("Sem alunos.")
 
 # --- FUNÇÃO DE VENDA ---
 def realizar_venda_form(aid, origin=None):
