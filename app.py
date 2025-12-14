@@ -377,13 +377,12 @@ def main_menu():
                         st.success(f"{n} novos, {a} atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
             
-            # --- NOVO ALUNO (COM DATA BR) ---
+            # --- NOVO ALUNO ---
             elif act=="NOVO ALUNO":
                 st.write("📝 **Ficha de Cadastro Completa**")
                 with st.form("nal"):
                     c1, c2 = st.columns([3, 1])
                     nm = c1.text_input("Nome Completo")
-                    # Adicionado format="DD/MM/YYYY"
                     nas = c2.date_input("Data Nascimento", value=None, min_value=date(1990,1,1), format="DD/MM/YYYY")
                     
                     c3, c4, c5 = st.columns(3)
@@ -405,7 +404,7 @@ def main_menu():
                         st.success("Aluno salvo com sucesso!")
                         st.rerun()
             
-            # --- ATUALIZAR (COM DATA BR) ---
+            # --- ATUALIZAR ---
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
@@ -424,7 +423,6 @@ def main_menu():
                     with st.form("ual"):
                         c1, c2 = st.columns([3, 1])
                         nm = c1.text_input("Nome", value=d['nome'])
-                        # Adicionado format="DD/MM/YYYY"
                         nas = c2.date_input("Nascimento", value=data_nasc_atual, format="DD/MM/YYYY")
                         
                         c3, c4, c5 = st.columns(3)
@@ -585,6 +583,7 @@ def realizar_venda_form(aid,mode=False):
     if df.empty: st.warning("Sem produtos"); return
     fr=get_historico_preferencias(aid); df['f']=df['nome'].map(fr).fillna(0); df=df.sort_values(['f','nome'],ascending=[False,True]); 
     if 'tipo' not in df: df['tipo']='ALIMENTO'
+    
     with st.form("v"):
         qs={}
         for tp in ["BEBIDA","ALIMENTO"]:
@@ -593,12 +592,23 @@ def realizar_venda_form(aid,mode=False):
                 st.write(f"**{tp}S**")
                 for i,r in sub.iterrows():
                     c1,c2,c3=st.columns([3,1,1]); c1.write(f"⭐ {r['nome']}" if r['f']>0 else r['nome']); c2.write(f"{r['valor']:.2f}"); qs[r['id']]=c3.number_input("Q",0,step=1,key=f"q{r['id']}",label_visibility="collapsed")
-        if st.form_submit_button("✅"):
+        
+        st.markdown("---")
+        c1, c2 = st.columns(2)
+        with c1: confirm = st.form_submit_button("✅ CONFIRMAR", type="primary")
+        with c2: cancel = st.form_submit_button("❌ CANCELAR")
+        
+        if confirm:
             t=0; its=[]
             for i,q in qs.items():
                 if q>0: it=df[df['id']==i].iloc[0]; t+=it['valor']*q; its.append(f"{q}x {it['nome']}")
-            if t>0: update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t); st.success("OK!"); st.session_state['aid_venda']=None if mode else None; st.rerun()
+            if t>0: 
+                update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
+                st.success("OK!"); st.session_state['aid_venda']=None if mode else None; st.rerun()
             else: st.warning("Selecione algo.")
+        
+        if cancel:
+            st.session_state['aid_venda']=None; st.rerun()
 
 if st.session_state['logado']: main_menu()
 else: login_screen()
