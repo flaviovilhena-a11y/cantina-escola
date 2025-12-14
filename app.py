@@ -4,8 +4,7 @@ import sqlite3
 import shutil
 import os
 import binascii
-import time 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from collections import Counter
 
 # --- Configuração da Página ---
@@ -184,7 +183,73 @@ def get_extrato_aluno(aluno_id, dias_filtro):
         return df
     return pd.DataFrame()
 
-# --- FUNÇÕES DE ALIMENTOS ---
+# --- FUNÇÕES DE RELATÓRIO (NOVAS) ---
+def get_relatorio_produtos(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    # Busca todas as transações da data selecionada
+    query = "SELECT itens FROM transacoes WHERE data_hora LIKE ?"
+    c = conn.cursor()
+    c.execute(query, (f"{data_filtro}%",))
+    rows = c.fetchall()
+    
+    # Busca tabela de preços atual para calcular totais estimados
+    df_precos = pd.read_sql_query("SELECT nome, valor FROM alimentos", conn)
+    preco_map = dict(zip(df_precos['nome'], df_precos['valor']))
+    conn.close()
+
+    qtd_geral = Counter()
+    
+    # Processa string de itens (ex: "2x Coxinha, 1x Suco")
+    for r in rows:
+        if r[0]:
+            itens_lista = r[0].split(", ")
+            for item in itens_lista:
+                try:
+                    parts = item.split("x ")
+                    if len(parts) == 2:
+                        qtd = int(parts[0])
+                        nome = parts[1]
+                        qtd_geral[nome] += qtd
+                except: continue
+    
+    # Monta DataFrame
+    dados = []
+    total_dia = 0.0
+    for nome, qtd in qtd_geral.items():
+        # Usa preço atual do cadastro. Se item foi excluído, usa 0.
+        valor_unit = preco_map.get(nome, 0.0) 
+        valor_total = valor_unit * qtd
+        total_dia += valor_total
+        dados.append({"Produto": nome, "Qtd Vendida": qtd, "Valor Total (R$)": valor_total})
+    
+    if dados:
+        df = pd.DataFrame(dados)
+        df = df.sort_values(by="Qtd Vendida", ascending=False)
+        return df, total_dia
+    return pd.DataFrame(), 0.0
+
+def get_relatorio_alunos_dia(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    query = '''
+        SELECT a.nome, t.itens, t.valor_total, t.data_hora 
+        FROM transacoes t 
+        JOIN alunos a ON t.aluno_id = a.id 
+        WHERE t.data_hora LIKE ? 
+        ORDER BY t.data_hora DESC
+    '''
+    try:
+        df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
+        # Formata hora
+        if not df.empty:
+            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
+            df = df[['Hora', 'nome', 'itens', 'valor_total']]
+            df.columns = ['Hora', 'Aluno', 'Produtos', 'Valor (R$)']
+    except:
+        df = pd.DataFrame()
+    conn.close()
+    return df
+
+# --- FUNÇÕES DE ALIMENTOS E ALUNOS (CRUD) ---
 def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('INSERT INTO alimentos (nome, valor, tipo) VALUES (?, ?, ?)', (nome, valor, tipo)); conn.commit(); conn.close()
 def update_alimento_db(id, nome, valor, tipo):
@@ -196,8 +261,6 @@ def get_all_alimentos():
     try: df = pd.read_sql_query("SELECT * FROM alimentos", conn)
     except: df = pd.DataFrame()
     conn.close(); return df
-
-# --- FUNÇÕES ALUNOS ---
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT id FROM alunos WHERE nome = ?", (nome,))
     data = c.fetchone(); action = ""
@@ -226,7 +289,6 @@ def login_screen():
 def main_menu():
     st.sidebar.title("Menu"); st.sidebar.subheader("💾 Backup")
     
-    # --- ÁREA DE BACKUP ATUALIZADA ---
     if os.path.exists(DB_FILE): 
         with open(DB_FILE,"rb") as f: st.sidebar.download_button("⬇️ BAIXAR DADOS",f,"backup.db")
     
@@ -240,17 +302,24 @@ def main_menu():
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao importar: {e}")
-    # ----------------------------------
 
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state['logado']=False; st.rerun()
 
     st.header("Painel Principal"); st.write("Usuário: fvilhena")
-    c1,c2=st.columns(2); c3,c4=st.columns(2)
-    if c1.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
-    if c2.button("COMPRAR REFEIÇÃO",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
-    if c3.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None)
-    if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
+    
+    # Layout de botões do menu (3 linhas)
+    c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
+    with c1: 
+        if st.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
+    with c2: 
+        if st.button("COMPRAR REFEIÇÃO",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
+    with c3: 
+        if st.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None)
+    with c4: 
+        if st.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
+    with c5:
+        if st.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos') # NOVO
 
     menu = st.session_state.get('menu')
 
@@ -400,6 +469,41 @@ def main_menu():
                 ext=get_extrato_aluno(al['id'],m[f])
                 if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
                 else: st.info("Vazio.")
+
+    # --- MENU RELATÓRIOS (NOVO) ---
+    if menu == 'relatorios':
+        st.markdown("---"); st.subheader("📊 Relatórios de Vendas")
+        
+        # Filtro de Data
+        data_selecionada = st.date_input("Selecione a Data:", datetime.now())
+        data_str = data_selecionada.strftime("%d/%m/%Y")
+        st.markdown(f"**Data filtrada:** {data_str}")
+        st.markdown("---")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("📦 TOTAL PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
+        with c2:
+            if st.button("👥 TOTAL POR ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
+
+        if st.session_state.get('rel_mode') == 'produtos':
+            st.markdown("### Resumo de Produtos Vendidos")
+            df_prod, total_dia = get_relatorio_produtos(data_str)
+            if not df_prod.empty:
+                st.metric("Total Arrecadado (Estimado)", f"R$ {total_dia:.2f}")
+                st.dataframe(df_prod, hide_index=True, use_container_width=True)
+            else:
+                st.info("Nenhuma venda registrada nesta data.")
+
+        elif st.session_state.get('rel_mode') == 'alunos':
+            st.markdown("### Vendas por Aluno")
+            df_alunos = get_relatorio_alunos_dia(data_str)
+            if not df_alunos.empty:
+                total_dia = df_alunos['Valor (R$)'].sum()
+                st.metric("Total Arrecadado (Real)", f"R$ {total_dia:.2f}")
+                st.dataframe(df_alunos, hide_index=True, use_container_width=True)
+            else:
+                st.info("Nenhuma venda registrada nesta data.")
 
 def realizar_venda_form(aid,mode=False):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
