@@ -52,7 +52,6 @@ def init_db():
 # --- CLASSE PARA GERAR PDF TÉRMICO (80mm) ---
 class PDFTermico(FPDF):
     def __init__(self, titulo, dados, modo="simples"):
-        # Se modo for 'turmas', dados é um dicionário. Se 'simples', é um DataFrame.
         linhas = 0
         if modo == "turmas":
             for df in dados.values(): linhas += len(df) + 4 
@@ -97,17 +96,28 @@ class PDFTermico(FPDF):
         largura_util = 76
         largura_col = largura_util / len(cols)
         
+        # Cabeçalhos
         for col in cols:
-            self.cell(largura_col, 4, str(col)[:15], 0, 0, 'L')
+            # Alinha numeros (Qtd e Valor) a direita, Texto a esquerda
+            align = 'R' if 'Qtd' in str(col) or 'Valor' in str(col) else 'L'
+            self.cell(largura_col, 4, str(col)[:15], 0, 0, align)
         self.ln()
         
         self.set_font('Courier', '', 7)
         for index, row in self.dados.iterrows():
             for col in cols:
                 valor = str(row[col])
-                if isinstance(row[col], (int, float)) and ('Valor' in col or 'Total' in col):
-                    valor = f"{row[col]:.2f}"
-                self.cell(largura_col, 4, valor[:20], 0, 0, 'L')
+                align = 'L' # Padrão Esquerda
+                
+                # Se for número (Valor ou Qtd), formata e alinha à Direita
+                if 'Valor' in col or 'Total' in col:
+                    if isinstance(row[col], (int, float)):
+                        valor = f"{row[col]:.2f}"
+                    align = 'R'
+                elif 'Qtd' in col:
+                    align = 'R'
+                
+                self.cell(largura_col, 4, valor[:20], 0, 0, align)
             self.ln()
         self.ln(4)
         self.cell(0, 0, border="T", ln=1)
@@ -123,33 +133,25 @@ class PDFTermico(FPDF):
             self.cell(16, 4, "QTD", 0, 1, 'R')
             
             self.set_font('Courier', '', 7)
-            total_financeiro = 0.0
             
             for index, row in df.iterrows():
                 produto = str(row['Produto'])
                 if produto == "TOTAL TURMA":
-                    total_financeiro = row['Total']
                     continue 
                 qtd = str(row['Qtd'])
                 self.cell(60, 4, produto[:30], 0, 0, 'L')
                 self.cell(16, 4, qtd, 0, 1, 'R')
             
-            self.ln(1)
-            self.set_font('Courier', 'B', 8)
-            self.cell(50, 5, "TOTAL VENDIDO:", 0, 0, 'R')
-            self.cell(26, 5, f"R$ {total_financeiro:.2f}", 0, 1, 'R')
-            
-            self.ln(4)
+            self.ln(2)
             self.cell(0, 0, border="B", ln=1)
             self.ln(2)
 
 # --- FUNÇÕES HELPER PARA DOWNLOAD PDF ---
 def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
-    # CORREÇÃO DO ERRO: Validação correta se é DataFrame ou Dict
     vazio = False
     if isinstance(dados, pd.DataFrame):
         if dados.empty: vazio = True
-    elif not dados: # Para dict ou None
+    elif not dados: 
         vazio = True
         
     if vazio: return
