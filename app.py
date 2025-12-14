@@ -10,12 +10,26 @@ import threading
 import streamlit.components.v1 as components
 import random
 import string
+import pytz # <--- NECESSÁRIO: pip install pytz
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
+
+# ==========================================
+#    CONFIGURAÇÃO DE FUSO HORÁRIO (MANAUS)
+# ==========================================
+FUSO_MANAUS = pytz.timezone('America/Manaus')
+
+def agora_manaus():
+    """Retorna o datetime atual em Manaus"""
+    return datetime.now(FUSO_MANAUS)
+
+def hoje_manaus():
+    """Retorna apenas a data atual em Manaus"""
+    return agora_manaus().date()
 
 # ==========================================
 #    CONFIGURAÇÃO DO BREVO (E-MAIL)
@@ -39,28 +53,16 @@ DB_FILE = 'cantina.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Tabela Alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL, login TEXT, senha TEXT)''')
-    try: c.execute("ALTER TABLE alunos ADD COLUMN telefone3 TEXT")
+    try: c.execute("ALTER TABLE alunos ADD COLUMN telefone3 TEXT"); c.execute("ALTER TABLE alunos ADD COLUMN login TEXT"); c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT")
     except: pass
-    try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT")
-    except: pass
-    try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT")
-    except: pass
-    
-    # Tabela Alimentos
     c.execute('''CREATE TABLE IF NOT EXISTS alimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, valor REAL, tipo TEXT)''')
     try: c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT"); c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
     except: pass
-    
-    # Tabela Transações
     c.execute('''CREATE TABLE IF NOT EXISTS transacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, itens TEXT, valor_total REAL, data_hora TEXT)''')
-    
-    # Tabela Recargas
     c.execute('''CREATE TABLE IF NOT EXISTS recargas (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, valor REAL, data_hora TEXT, metodo_pagamento TEXT, nsu TEXT)''')
     try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT"); c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
     except: pass
-    
     conn.commit(); conn.close()
 
 # --- FUNÇÃO GERAR CREDENCIAIS ---
@@ -104,7 +106,8 @@ class PDFTermico(FPDF):
     def header(self):
         self.set_font('Courier', 'B', 10); self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
         self.set_font('Courier', '', 8); self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
-        self.cell(0, 4, f'{datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        # DATA MANAUS NO CABEÇALHO
+        self.cell(0, 4, f'{agora_manaus().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
         self.set_font('Courier', 'B', 9); self.multi_cell(0, 4, self.titulo.upper(), 0, 'C'); self.ln(2)
     def gerar_relatorio(self):
@@ -144,7 +147,8 @@ class PDFA4(FPDF):
     def header(self):
         self.set_font('Arial', 'B', 14); self.cell(0, 10, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
         self.set_font('Arial', '', 10); self.cell(0, 6, f'Relatório: {self.titulo}', 0, 1, 'C')
-        self.cell(0, 6, f'Gerado em: {datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        # DATA MANAUS NO CABEÇALHO
+        self.cell(0, 6, f'Gerado em: {agora_manaus().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(5); self.line(10, 35, 200, 35); self.ln(5)
     def footer(self):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
@@ -242,7 +246,12 @@ class PixPayload:
 # --- DB LEITURA ---
 def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
 def get_alunos_por_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,)); conn.close(); return df
-def get_vendas_hoje_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%")); conn.close(); return df
+def get_vendas_hoje_turma(t): 
+    # USA AGORA_MANAUS() para pegar a data correta
+    data_hoje_str = agora_manaus().strftime("%d/%m/%Y")
+    conn=sqlite3.connect(DB_FILE)
+    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,data_hoje_str+"%"))
+    conn.close(); return df
 def get_historico_preferencias(aid):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
     for row in r: 
@@ -252,18 +261,26 @@ def get_historico_preferencias(aid):
                 except: pass
     return cnt
 
-# --- DB ESCRITA ---
+# --- DB ESCRITA (COM DATA MANAUS) ---
 def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
-def registrar_venda(aid,i,v): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"))); conn.commit(); conn.close()
+def registrar_venda(aid,i,v): 
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    # SALVA DATA/HORA DE MANAUS
+    data_manaus = agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
+    c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,data_manaus))
+    conn.commit(); conn.close()
 def registrar_recarga(aid,v,m,n=None): 
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"),m,n))
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    data_manaus = agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
+    c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,data_manaus,m,n))
     c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
 def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
-# --- HELPER FILTROS ---
+# --- HELPER FILTROS (COM DATA MANAUS) ---
 def calcular_data_corte(filtro):
-    hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    # BASEIA-SE NO 'HOJE' DE MANAUS
+    hoje = agora_manaus().replace(hour=0, minute=0, second=0, microsecond=0)
     if filtro == "HOJE": return hoje
     elif filtro == "7 DIAS": return hoje - timedelta(days=7)
     elif filtro == "30 DIAS": return hoje - timedelta(days=30)
@@ -284,16 +301,17 @@ def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
-    
-    # Mapeamento de preços
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor']))
     conn.close()
-    
     dc = calcular_data_corte(filtro); ext = []
     
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: 
+        # Garante que a data lida do banco (string) seja comparável com a data de corte (timezone aware)
+        # Simplificação: Removemos o timezone da data de corte para comparar cruamente
+        dt_corte_naive = dc.replace(tzinfo=None) if dc else None
+        
+        if not dt_corte_naive or dt>=dt_corte_naive: 
             itens_str = i[1]; itens_formatados = []
             if itens_str:
                 for item in itens_str.split(", "):
@@ -302,13 +320,12 @@ def get_extrato_aluno(aid, filtro):
                         p_unit = preco_map.get(nome, 0.0)
                         itens_formatados.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_formatados.append(item)
-            
-            # COLUNA DE PRODUTOS COMPRADOS
             ext.append({"Data":dt,"Tipo":"COMPRA","Produtos/Histórico":", ".join(itens_formatados),"Valor":-i[2]})
             
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Produtos/Histórico":f"Via {i[2]}","Valor":i[1]})
+        dt_corte_naive = dc.replace(tzinfo=None) if dc else None
+        if not dt_corte_naive or dt>=dt_corte_naive: ext.append({"Data":dt,"Tipo":"RECARGA","Produtos/Histórico":f"Via {i[2]}","Valor":i[1]})
         
     if ext: 
         df=pd.DataFrame(ext).sort_values("Data",ascending=False)
@@ -321,7 +338,10 @@ def get_vendas_cancelar(aid, filtro):
     try:
         df = pd.read_sql_query("SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC", conn, params=(aid,))
         if not df.empty and dc:
-            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S"); df = df[df['dt_obj'] >= dc]
+            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S")
+            # Ajuste fuso para comparação
+            dc_naive = dc.replace(tzinfo=None)
+            df = df[df['dt_obj'] >= dc_naive]
     except: df = pd.DataFrame()
     conn.close(); return df
 
