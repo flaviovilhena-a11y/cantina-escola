@@ -280,7 +280,7 @@ def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, sald
         action = "novo"
     conn.commit(); conn.close(); return action
 
-# --- FUNÇÃO DE ATUALIZAÇÃO CORRIGIDA (INCLUINDO NASCIMENTO) ---
+# --- FUNÇÃO DE ATUALIZAÇÃO ---
 def update_aluno_manual(id, nome, serie, turma, turno, nasc_str, email, t1, t2, t3, saldo):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -377,13 +377,14 @@ def main_menu():
                         st.success(f"{n} novos, {a} atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
             
-            # --- NOVO ALUNO (COM TODOS OS CAMPOS) ---
+            # --- NOVO ALUNO (COM DATA BR) ---
             elif act=="NOVO ALUNO":
                 st.write("📝 **Ficha de Cadastro Completa**")
                 with st.form("nal"):
                     c1, c2 = st.columns([3, 1])
                     nm = c1.text_input("Nome Completo")
-                    nas = c2.date_input("Data Nascimento", value=None, min_value=date(1990,1,1))
+                    # Adicionado format="DD/MM/YYYY"
+                    nas = c2.date_input("Data Nascimento", value=None, min_value=date(1990,1,1), format="DD/MM/YYYY")
                     
                     c3, c4, c5 = st.columns(3)
                     ser = c3.text_input("Série")
@@ -404,7 +405,7 @@ def main_menu():
                         st.success("Aluno salvo com sucesso!")
                         st.rerun()
             
-            # --- ATUALIZAR (COM TODOS OS CAMPOS) ---
+            # --- ATUALIZAR (COM DATA BR) ---
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
@@ -414,7 +415,6 @@ def main_menu():
                     id_a = int(sel.split(' - ')[0])
                     d = df[df['id']==id_a].iloc[0]
                     
-                    # Converte data string do banco para objeto date
                     try:
                         data_nasc_atual = datetime.strptime(d['nascimento'], '%Y-%m-%d').date()
                     except:
@@ -424,13 +424,13 @@ def main_menu():
                     with st.form("ual"):
                         c1, c2 = st.columns([3, 1])
                         nm = c1.text_input("Nome", value=d['nome'])
-                        nas = c2.date_input("Nascimento", value=data_nasc_atual)
+                        # Adicionado format="DD/MM/YYYY"
+                        nas = c2.date_input("Nascimento", value=data_nasc_atual, format="DD/MM/YYYY")
                         
                         c3, c4, c5 = st.columns(3)
                         ser = c3.text_input("Série", value=d['serie'] if d['serie'] else "")
                         tr = c4.text_input("Turma", value=d['turma'])
                         
-                        # Tenta achar o index do turno atual, senão usa 0
                         turnos = ["Matutino", "Vespertino", "Integral"]
                         idx_t = turnos.index(d['turno']) if d['turno'] in turnos else 0
                         tur = c5.selectbox("Turno", turnos, index=idx_t)
@@ -445,7 +445,6 @@ def main_menu():
                         sl = st.number_input("Saldo (R$)", value=float(d['saldo']))
                         
                         if st.form_submit_button("CONFIRMAR ALTERAÇÕES"):
-                            # Converte data para string para salvar
                             nas_str = str(nas) if nas else None
                             update_aluno_manual(id_a, nm, ser, tr, tur, nas_str, em, t1, t2, t3, sl)
                             st.success("Dados atualizados!")
