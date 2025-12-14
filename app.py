@@ -137,15 +137,11 @@ class PDFA4(FPDF):
     def tabela_simples(self, df):
         self.set_font('Arial', 'B', 9)
         cols = df.columns.tolist()
-        largura_col = 190 / len(cols) # 190mm largura útil A4
-        
-        # Cabeçalho
+        largura_col = 190 / len(cols)
         for col in cols:
             align = 'R' if 'Valor' in col or 'Qtd' in col or 'Total' in col else 'L'
             self.cell(largura_col, 8, str(col), 1, 0, 'C', fill=False)
         self.ln()
-        
-        # Dados
         self.set_font('Arial', '', 9)
         for index, row in df.iterrows():
             for col in cols:
@@ -154,8 +150,7 @@ class PDFA4(FPDF):
                 if 'Valor' in col or 'Total' in col:
                     if isinstance(row[col], (int, float)): valor = f"R$ {row[col]:.2f}"
                     align = 'R'
-                elif 'Qtd' in col:
-                    align = 'R'
+                elif 'Qtd' in col: align = 'R'
                 self.cell(largura_col, 7, valor[:40], 1, 0, align)
             self.ln()
 
@@ -163,94 +158,59 @@ class PDFA4(FPDF):
         for turma, df in dados_dict.items():
             self.set_font('Arial', 'B', 11)
             self.cell(0, 10, f"TURMA: {turma}", 0, 1, 'L')
-            
             self.set_font('Arial', 'B', 9)
-            self.cell(100, 7, "PRODUTO", 1, 0, 'L')
-            self.cell(30, 7, "QTD", 1, 0, 'C')
-            self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
-            
+            self.cell(100, 7, "PRODUTO", 1, 0, 'L'); self.cell(30, 7, "QTD", 1, 0, 'C'); self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
             self.set_font('Arial', '', 9)
             for index, row in df.iterrows():
-                produto = str(row['Produto'])
-                qtd = str(row['Qtd'])
-                total = f"R$ {row['Total']:.2f}"
-                
-                # Destaca a linha de total
+                produto = str(row['Produto']); qtd = str(row['Qtd']); total = f"R$ {row['Total']:.2f}"
                 if produto == "TOTAL TURMA":
                     self.set_font('Arial', 'B', 9)
-                    self.cell(130, 7, "TOTAL DA TURMA", 1, 0, 'R')
-                    self.cell(60, 7, total, 1, 1, 'R')
+                    self.cell(130, 7, "TOTAL DA TURMA", 1, 0, 'R'); self.cell(60, 7, total, 1, 1, 'R')
                 else:
                     self.set_font('Arial', '', 9)
-                    self.cell(100, 7, produto, 1, 0, 'L')
-                    self.cell(30, 7, qtd, 1, 0, 'C')
-                    self.cell(60, 7, total, 1, 1, 'R')
+                    self.cell(100, 7, produto, 1, 0, 'L'); self.cell(30, 7, qtd, 1, 0, 'C'); self.cell(60, 7, total, 1, 1, 'R')
             self.ln(5)
 
-# --- HELPER DOWNLOAD A4 ---
+# --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     vazio = False
     if isinstance(dados, pd.DataFrame):
         if dados.empty: vazio = True
     elif not dados: vazio = True
     if vazio: return
-
     try:
         pdf = PDFA4(titulo)
-        if modo == "turmas":
-            pdf.tabela_agrupada(dados)
-        else:
-            pdf.tabela_simples(dados)
-            
+        if modo == "turmas": pdf.tabela_agrupada(dados)
+        else: pdf.tabela_simples(dados)
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore')
-        st.download_button(
-            label="🖨️ BAIXAR PDF LASER (A4)",
-            data=pdf_bytes,
-            file_name=f"relatorio_a4_{int(time.time())}.pdf",
-            mime="application/pdf",
-        )
-    except Exception as e:
-        st.error(f"Erro PDF A4: {e}")
+        st.download_button(label="🖨️ BAIXAR PDF LASER (A4)", data=pdf_bytes, file_name=f"relatorio_a4_{int(time.time())}.pdf", mime="application/pdf")
+    except Exception as e: st.error(f"Erro PDF A4: {e}")
 
-# --- HELPER DOWNLOAD TÉRMICO ---
 def criar_botao_pdf_termico(dados, titulo_relatorio, modo="simples"):
     vazio = False
     if isinstance(dados, pd.DataFrame):
         if dados.empty: vazio = True
     elif not dados: vazio = True
     if vazio: return
-
     try:
         pdf = PDFTermico(titulo_relatorio, dados, modo)
         pdf.gerar_relatorio()
         pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore') 
-        st.download_button(
-            label="🧾 BAIXAR PDF TÉRMICO (Bematech)",
-            data=pdf_bytes,
-            file_name=f"cupom_{modo}_{int(time.time())}.pdf",
-            mime="application/pdf",
-            type="primary"
-        )
+        st.download_button(label="🧾 BAIXAR PDF TÉRMICO (Bematech)", data=pdf_bytes, file_name=f"cupom_{modo}_{int(time.time())}.pdf", mime="application/pdf", type="primary")
     except Exception as e: st.error(f"Erro PDF Termico: {e}")
 
-# --- FUNÇÃO DE ENVIO DE E-MAIL (THREAD) ---
+# --- EMAIL E ALERTAS ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
     if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
     headers = {"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"}
-    payload = {
-        "sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE},
-        "to": [{"email": email_destino, "name": nome_aluno}],
-        "subject": assunto,
-        "htmlContent": f"<html><body><h3>Olá, responsável por {nome_aluno}!</h3><p>{mensagem_html}</p><hr><p style='font-size:12px; color:gray'>Aviso automático da Cantina Peixinho Dourado.</p></body></html>"
-    }
+    payload = {"sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE}, "to": [{"email": email_destino, "name": nome_aluno}], "subject": assunto, "htmlContent": f"<html><body><h3>Olá, responsável por {nome_aluno}!</h3><p>{mensagem_html}</p><hr><p style='font-size:12px; color:gray'>Aviso automático da Cantina Peixinho Dourado.</p></body></html>"}
     try: requests.post(url, json=payload, headers=headers)
     except: pass
 
 def disparar_alerta(aluno_id, tipo, valor, detalhes):
     try:
-        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-        c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone(); conn.close()
+        conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone(); conn.close()
         if dados:
             nome, email, saldo_atual = dados
             if email and len(str(email)) > 5:
@@ -270,8 +230,7 @@ class PixPayload:
             c&=0xFFFF
         return f"{c:04X}"
     def gerar_payload(self):
-        p=self._f("00","01")+self._f("26",self._f("00","BR.GOV.BCB.PIX")+self._f("01",self.c))+self._f("52","0000")+self._f("53","986")+self._f("54",self.v)+self._f("58","BR")+self._f("59",self.n)+self._f("60",self.ci)+self._f("62",self._f("05",self.t))+"6304"
-        return p+self._crc(p)
+        p=self._f("00","01")+self._f("26",self._f("00","BR.GOV.BCB.PIX")+self._f("01",self.c))+self._f("52","0000")+self._f("53","986")+self._f("54",self.v)+self._f("58","BR")+self._f("59",self.n)+self._f("60",self.ci)+self._f("62",self._f("05",self.t))+"6304"; return p+self._crc(p)
 
 # --- FUNÇÕES DB ---
 def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
@@ -302,15 +261,27 @@ def calcular_data_corte(filtro):
     elif filtro == "30 DIAS": return hoje - timedelta(days=30)
     return None
 
+def validar_horario_turno(data_hora_str, turno):
+    if turno == "DIA INTEIRO": return True
+    try:
+        dt = datetime.strptime(data_hora_str, "%d/%m/%Y %H:%M:%S")
+        hora = dt.hour; minuto = dt.minute
+        # Matutino: 06:00 até 11:45 (11:45 incluso)
+        if turno == "MATUTINO":
+            if hora >= 6 and (hora < 11 or (hora == 11 and minuto <= 45)): return True
+        # Vespertino: 13:00 até 18:00
+        elif turno == "VESPERTINO":
+            if hora >= 13 and hora <= 18: return True
+    except: pass
+    return False
+
 def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor']))
     conn.close()
-    
     dc = calcular_data_corte(filtro); ext = []
-    
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: 
@@ -321,11 +292,9 @@ def get_extrato_aluno(aid, filtro):
                         qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_com_preco.append(item)
             ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":", ".join(itens_com_preco),"Valor":-i[2]})
-            
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Detalhes":f"Via {i[2]}","Valor":i[1]})
-        
     if ext: 
         df=pd.DataFrame(ext).sort_values("Data",ascending=False)
         df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M"))
@@ -341,11 +310,20 @@ def get_vendas_cancelar(aid, filtro):
     except: df = pd.DataFrame()
     conn.close(); return df
 
-def get_relatorio_produtos(df):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{df}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
-    for r in rs:
-        if r[0]: 
-            for i in r[0].split(", "):
+def get_relatorio_produtos(df_data, turno="DIA INTEIRO"):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    # Adicionado SELECT data_hora
+    c.execute("SELECT itens, data_hora FROM transacoes WHERE data_hora LIKE ?",(f"{df_data}%",))
+    rs=c.fetchall()
+    dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor']))
+    conn.close(); qg=Counter()
+    
+    for itens, data_hora in rs:
+        # Filtro de Turno
+        if not validar_horario_turno(data_hora, turno): continue
+        
+        if itens: 
+            for i in itens.split(", "):
                 try: qg[i.split("x ")[1]]+=int(i.split("x ")[0])
                 except: pass
     dd=[]; td=0.0
@@ -353,16 +331,21 @@ def get_relatorio_produtos(df):
     if dd: return pd.DataFrame(dd).sort_values("Qtd Vendida",ascending=False),td
     return pd.DataFrame(),0.0
 
-def get_relatorio_produtos_por_turma(data_filtro):
+def get_relatorio_produtos_por_turma(data_filtro, turno="DIA INTEIRO"):
     conn = sqlite3.connect(DB_FILE)
-    query = '''SELECT a.turma, t.itens FROM transacoes t JOIN alunos a ON t.aluno_id = a.id WHERE t.data_hora LIKE ? ORDER BY a.turma ASC'''
+    # Adicionado t.data_hora
+    query = '''SELECT a.turma, t.itens, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id = a.id WHERE t.data_hora LIKE ? ORDER BY a.turma ASC'''
     try:
         rows = conn.execute(query, (f"{data_filtro}%",)).fetchall()
         dfp = pd.read_sql_query("SELECT nome,valor FROM alimentos", conn); preco_map = dict(zip(dfp['nome'], dfp['valor']))
     except: return {}
     conn.close()
     dados_turmas = {}
-    for turma, itens in rows:
+    
+    for turma, itens, data_hora in rows:
+        # Filtro de Turno
+        if not validar_horario_turno(data_hora, turno): continue
+        
         if not turma: turma = "SEM TURMA"
         if turma not in dados_turmas: dados_turmas[turma] = Counter()
         if itens:
@@ -626,7 +609,6 @@ def main_menu():
                             st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                             
                             c_p1, c_p2 = st.columns(2)
-                            if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
                             criar_botao_pdf_a4(ext, f"EXTRATO: {al['nome']}")
                             criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
                         else: st.info("Vazio.")
@@ -654,6 +636,11 @@ def main_menu():
         st.markdown("---"); st.subheader("📊 Relatórios")
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
+        
+        # Filtro de Turno Adicionado Aqui
+        turno_sel = st.radio("Turno:", ["DIA INTEIRO", "MATUTINO", "VESPERTINO"], horizontal=True)
+        st.markdown("---")
+
         c1, c2, c3 = st.columns(3)
         if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
         if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
@@ -662,29 +649,28 @@ def main_menu():
         if st.session_state.get('rel_mode') == 'produtos':
             vis_mode = st.radio("Modo de Visualização:", ["VISÃO GERAL (TOTAL)", "DETALHADO POR TURMA"], horizontal=True)
             if vis_mode == "VISÃO GERAL (TOTAL)":
-                df_p, tot = get_relatorio_produtos(d_str)
+                df_p, tot = get_relatorio_produtos(d_str, turno_sel)
                 if not df_p.empty:
-                    st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
+                    st.metric(f"Total {turno_sel} (Estimado)", f"R$ {tot:.2f}")
                     st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                     c1, c2 = st.columns(2)
-                    criar_botao_pdf_a4(df_p, "RELATORIO VENDAS GERAL")
-                    criar_botao_pdf_termico(df_p, "RELATORIO VENDAS GERAL")
-                else: st.info("Nada vendido.")
+                    criar_botao_pdf_a4(df_p, f"VENDAS GERAL ({turno_sel})")
+                    criar_botao_pdf_termico(df_p, f"VENDAS GERAL ({turno_sel})")
+                else: st.info("Nada vendido neste turno.")
             else:
-                res_turmas = get_relatorio_produtos_por_turma(d_str)
+                res_turmas = get_relatorio_produtos_por_turma(d_str, turno_sel)
                 if res_turmas:
-                    # Para impressão térmica, concatenamos tudo em um único DF
                     df_completo = pd.DataFrame()
                     for turma, df_t in res_turmas.items():
                         st.markdown(f"### {turma}")
                         st.dataframe(df_t, column_config={"Total": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                        df_t['TURMA'] = turma # Marca a turma
+                        df_t['TURMA'] = turma
                         df_completo = pd.concat([df_completo, df_t])
                     
                     c1, c2 = st.columns(2)
-                    criar_botao_pdf_a4(res_turmas, "RELATORIO POR TURMA", modo="turmas")
-                    criar_botao_pdf_termico(res_turmas, "RELATORIO POR TURMA", modo="turmas")
-                else: st.info("Nada vendido.")
+                    criar_botao_pdf_a4(res_turmas, f"POR TURMA ({turno_sel})", modo="turmas")
+                    criar_botao_pdf_termico(res_turmas, f"POR TURMA ({turno_sel})", modo="turmas")
+                else: st.info("Nada vendido neste turno.")
         
         elif st.session_state.get('rel_mode') == 'alunos':
             df_a = get_relatorio_alunos_dia(d_str)
