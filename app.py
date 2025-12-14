@@ -8,8 +8,8 @@ import time
 import requests
 import threading
 import streamlit.components.v1 as components
-import random # <--- NOVO
-import string # <--- NOVO
+import random
+import string
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
@@ -39,24 +39,28 @@ DB_FILE = 'cantina.db'
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
-    # Tabela Alunos (Com Login e Senha)
+    # Tabela Alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL, login TEXT, senha TEXT)''')
-    
-    # Migrações para garantir que colunas existam
     try: c.execute("ALTER TABLE alunos ADD COLUMN telefone3 TEXT")
     except: pass
-    try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT") # <--- NOVO
+    try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT")
     except: pass
-    try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT") # <--- NOVO
+    try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT")
     except: pass
     
+    # Tabela Alimentos
     c.execute('''CREATE TABLE IF NOT EXISTS alimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, valor REAL, tipo TEXT)''')
     try: c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT"); c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
     except: pass
+    
+    # Tabela Transações
     c.execute('''CREATE TABLE IF NOT EXISTS transacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, itens TEXT, valor_total REAL, data_hora TEXT)''')
+    
+    # Tabela Recargas
     c.execute('''CREATE TABLE IF NOT EXISTS recargas (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, valor REAL, data_hora TEXT, metodo_pagamento TEXT, nsu TEXT)''')
     try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT"); c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
     except: pass
+    
     conn.commit(); conn.close()
 
 # --- FUNÇÃO GERAR CREDENCIAIS ---
@@ -65,54 +69,24 @@ def gerar_senha_aleatoria(tamanho=6):
     return ''.join(random.choice(caracteres) for i in range(tamanho))
 
 def garantir_credenciais(aluno_id, nome_aluno):
-    """Gera login e senha se não existirem"""
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
     c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,))
     dados = c.fetchone()
     
-    login_novo = None
-    senha_nova = None
-    
-    if not dados or not dados[0]: # Se não tem login
-        # Cria login: primeiro nome (minusculo) + ID (ex: joao15)
+    if not dados or not dados[0]:
         primeiro_nome = nome_aluno.split()[0].lower()
-        # Remove acentos básicos do login (opcional, simplificado aqui)
         primeiro_nome = primeiro_nome.replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').replace('ã','a')
         login_novo = f"{primeiro_nome}{aluno_id}"
-    else:
-        login_novo = dados[0]
+    else: login_novo = dados[0]
 
-    if not dados or not dados[1]: # Se não tem senha
-        senha_nova = gerar_senha_aleatoria()
-    else:
-        senha_nova = dados[1]
+    if not dados or not dados[1]: senha_nova = gerar_senha_aleatoria()
+    else: senha_nova = dados[1]
     
-    # Atualiza no banco
     c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
     conn.commit(); conn.close()
     return login_novo, senha_nova
 
-# --- FUNÇÃO EMAIL CREDENCIAIS ---
-def enviar_credenciais_thread(email, nome, login, senha):
-    if not email or "@" not in str(email): return
-    
-    assunto = "🔑 Seu Acesso - Cantina Peixinho Dourado"
-    msg_html = f"""
-    <html><body>
-        <h3>Olá, responsável por {nome}!</h3>
-        <p>Para acompanhar o saldo e extrato em tempo real, criamos um acesso exclusivo para você.</p>
-        <div style="background-color: #f0f2f6; padding: 15px; border-radius: 10px; border: 1px solid #ccc;">
-            <p><b>Login:</b> {login}</p>
-            <p><b>Senha:</b> {senha}</p>
-        </div>
-        <p>Acesse nosso aplicativo para conferir.</p>
-        <hr>
-        <p style='font-size:12px; color:gray'>Cantina Peixinho Dourado</p>
-    </body></html>
-    """
-    enviar_email_brevo_thread(email, nome, assunto, msg_html)
-
-# --- CLASSES E FUNÇÕES PDF (MANTIDAS IGUAIS) ---
+# --- CLASSES PDF ---
 class PDFTermico(FPDF):
     def __init__(self, titulo, dados, modo="simples"):
         linhas = 0
@@ -128,46 +102,38 @@ class PDFTermico(FPDF):
         self.set_margins(2, 2, 2)
         self.add_page()
     def header(self):
-        self.set_font('Courier', 'B', 10)
-        self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
-        self.set_font('Courier', '', 8)
-        self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
+        self.set_font('Courier', 'B', 10); self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
+        self.set_font('Courier', '', 8); self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
         self.cell(0, 4, f'{datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
-        self.set_font('Courier', 'B', 9)
-        self.multi_cell(0, 4, self.titulo.upper(), 0, 'C')
-        self.ln(2)
+        self.set_font('Courier', 'B', 9); self.multi_cell(0, 4, self.titulo.upper(), 0, 'C'); self.ln(2)
     def gerar_relatorio(self):
         if self.modo == "turmas": self._gerar_por_turma()
         else: self._gerar_simples()
     def _gerar_simples(self):
-        self.set_font('Courier', 'B', 7)
-        cols = self.dados.columns.tolist()
-        largura_col = 76 / len(cols)
-        for col in cols:
-            align = 'R' if 'Qtd' in str(col) or 'Valor' in str(col) else 'L'
-            self.cell(largura_col, 4, str(col)[:15], 0, 0, align)
-        self.ln()
-        self.set_font('Courier', '', 7)
-        for index, row in self.dados.iterrows():
-            for col in cols:
-                valor = str(row[col])
-                align = 'L'
-                if 'Valor' in col or 'Total' in col:
-                    if isinstance(row[col], (int, float)): valor = f"{row[col]:.2f}"
+        self.set_font('Courier', 'B', 7); cols = self.dados.columns.tolist(); largeur = 76/len(cols)
+        for c in cols:
+            align = 'R' if 'Qtd' in str(c) or 'Valor' in str(c) else 'L'
+            self.cell(largeur, 4, str(c)[:15], 0, 0, align)
+        self.ln(); self.set_font('Courier', '', 7)
+        for i, r in self.dados.iterrows():
+            for c in cols:
+                v = str(r[c]); align = 'L'
+                if 'Valor' in c or 'Total' in c: 
+                    if isinstance(r[c], (int, float)): v = f"{r[c]:.2f}"
                     align = 'R'
-                elif 'Qtd' in col: align = 'R'
-                self.cell(largura_col, 4, valor[:20], 0, 0, align)
+                elif 'Qtd' in c: align = 'R'
+                self.cell(largeur, 4, v[:20], 0, 0, align)
             self.ln()
         self.ln(4); self.cell(0, 0, border="T", ln=1)
     def _gerar_por_turma(self):
-        for turma, df in self.dados.items():
-            self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {turma}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
+        for t, df in self.dados.items():
+            self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {t}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
             self.set_font('Courier', 'B', 7); self.cell(60, 4, "PRODUTO", 0, 0, 'L'); self.cell(16, 4, "QTD", 0, 1, 'R')
             self.set_font('Courier', '', 7)
-            for index, row in df.iterrows():
-                if str(row['Produto']) == "TOTAL TURMA": continue
-                self.cell(60, 4, str(row['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(row['Qtd']), 0, 1, 'R')
+            for i, r in df.iterrows():
+                if str(r['Produto']) == "TOTAL TURMA": continue
+                self.cell(60, 4, str(r['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(r['Qtd']), 0, 1, 'R')
             self.ln(2); self.cell(0, 0, border="B", ln=1); self.ln(2)
 
 class PDFA4(FPDF):
@@ -184,7 +150,7 @@ class PDFA4(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
     def tabela_simples(self, df):
         self.set_font('Arial', 'B', 9); cols = df.columns.tolist(); largeur = 190/len(cols)
-        for c in cols: 
+        for c in cols:
             align = 'R' if 'Valor' in c or 'Qtd' in c or 'Total' in c else 'L'
             self.cell(largeur, 8, str(c), 1, 0, 'C')
         self.ln(); self.set_font('Arial', '', 9)
@@ -210,6 +176,7 @@ class PDFA4(FPDF):
                     self.set_font('Arial','',9); self.cell(100,7,p,1,0,'L'); self.cell(30,7,q,1,0,'C'); self.cell(60,7,tot,1,1,'R')
             self.ln(5)
 
+# --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     vazio = False
     if isinstance(dados, pd.DataFrame): 
@@ -234,7 +201,7 @@ def criar_botao_pdf_termico(dados, titulo, modo="simples"):
         st.download_button("🧾 BAIXAR PDF TÉRMICO (Bematech)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"cupom_{int(time.time())}.pdf", "application/pdf", type="primary")
     except Exception as e: st.error(f"Erro Termico: {e}")
 
-# --- EMAIL E ALERTAS ---
+# --- EMAIL ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
     if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
@@ -243,17 +210,22 @@ def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html)
     try: requests.post(url, json=payload, headers=headers)
     except: pass
 
+def enviar_credenciais_thread(email, nome, login, senha):
+    if not email or "@" not in str(email): return
+    msg_html = f"<html><body><h3>Olá, responsável por {nome}!</h3><p>Para acompanhar o saldo, seu acesso é:</p><div style='background:#f0f2f6;padding:15px;border:1px solid #ccc;'><p><b>Login:</b> {login}</p><p><b>Senha:</b> {senha}</p></div><p>Acesse o app da cantina.</p></body></html>"
+    enviar_email_brevo_thread(email, nome, "🔑 Seu Acesso - Cantina Peixinho Dourado", msg_html)
+
 def disparar_alerta(aluno_id, tipo, valor, detalhes):
     try:
         conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone(); conn.close()
         if dados:
             nome, email, saldo_atual = dados
             if email and len(str(email)) > 5:
-                msg = f"<html><body><h3>Olá, responsável por {nome}!</h3><p>Uma <b>{tipo}</b> foi realizada.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}</p><hr><p style='font-size:12px; color:gray'>Aviso automático.</p></body></html>"
+                msg = f"<html><body><h3>Olá, responsável por {nome}!</h3><p>Uma <b>{tipo}</b> foi realizada.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}</p></body></html>"
                 threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, f"🔔 Cantina: {tipo} R$ {valor:.2f}", msg)).start()
     except: pass
 
-# --- CLASSE PIX ---
+# --- PIX ---
 class PixPayload:
     def __init__(self, c, n, ci, v, t="***"): self.c,self.n,self.ci,self.v,self.t=c,n,ci,f"{v:.2f}",t
     def _f(self,i,v): return f"{i}{len(v):02}{v}"
@@ -267,7 +239,7 @@ class PixPayload:
     def gerar_payload(self):
         p=self._f("00","01")+self._f("26",self._f("00","BR.GOV.BCB.PIX")+self._f("01",self.c))+self._f("52","0000")+self._f("53","986")+self._f("54",self.v)+self._f("58","BR")+self._f("59",self.n)+self._f("60",self.ci)+self._f("62",self._f("05",self.t))+"6304"; return p+self._crc(p)
 
-# --- FUNÇÕES DB ---
+# --- DB LEITURA ---
 def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
 def get_alunos_por_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,)); conn.close(); return df
 def get_vendas_hoje_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%")); conn.close(); return df
@@ -280,6 +252,7 @@ def get_historico_preferencias(aid):
                 except: pass
     return cnt
 
+# --- DB ESCRITA ---
 def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
 def registrar_venda(aid,i,v): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"))); conn.commit(); conn.close()
 def registrar_recarga(aid,v,m,n=None): 
@@ -288,7 +261,7 @@ def registrar_recarga(aid,v,m,n=None):
 def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
-# --- FILTROS E RELATÓRIO ---
+# --- HELPER FILTROS ---
 def calcular_data_corte(filtro):
     hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     if filtro == "HOJE": return hoje
@@ -300,34 +273,43 @@ def validar_horario_turno(data_hora_str, turno):
     if turno == "DIA INTEIRO": return True
     try:
         dt = datetime.strptime(data_hora_str, "%d/%m/%Y %H:%M:%S")
-        hora = dt.hour; minuto = dt.minute
-        if turno == "MATUTINO":
-            if hora >= 6 and (hora < 11 or (hora == 11 and minuto <= 45)): return True
-        elif turno == "VESPERTINO":
-            if hora >= 13 and hora <= 18: return True
+        h = dt.hour; m = dt.minute
+        if turno == "MATUTINO": return (h>=6 and (h<11 or (h==11 and m<=45)))
+        elif turno == "VESPERTINO": return (h>=13 and h<=18)
     except: pass
     return False
 
+# --- RELATORIOS ---
 def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
+    
+    # Mapeamento de preços
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor']))
     conn.close()
+    
     dc = calcular_data_corte(filtro); ext = []
+    
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: 
-            itens_str = i[1]; itens_com_preco = []
+            itens_str = i[1]; itens_formatados = []
             if itens_str:
                 for item in itens_str.split(", "):
                     try:
-                        qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
-                    except: itens_com_preco.append(item)
-            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":", ".join(itens_com_preco),"Valor":-i[2]})
+                        qtd, nome = item.split("x ")
+                        p_unit = preco_map.get(nome, 0.0)
+                        itens_formatados.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
+                    except: itens_formatados.append(item)
+            
+            # COLUNA DE PRODUTOS COMPRADOS
+            ext.append({"Data":dt,"Tipo":"COMPRA","Produtos/Histórico":", ".join(itens_formatados),"Valor":-i[2]})
+            
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Detalhes":f"Via {i[2]}","Valor":i[1]})
+        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Produtos/Histórico":f"Via {i[2]}","Valor":i[1]})
+        
     if ext: 
         df=pd.DataFrame(ext).sort_values("Data",ascending=False)
         df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M"))
@@ -349,8 +331,8 @@ def get_relatorio_produtos(df_data, turno="DIA INTEIRO"):
     rs=c.fetchall()
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor']))
     conn.close(); qg=Counter()
-    for itens, data_hora in rs:
-        if not validar_horario_turno(data_hora, turno): continue
+    for itens, dh in rs:
+        if not validar_horario_turno(dh, turno): continue
         if itens: 
             for i in itens.split(", "):
                 try: qg[i.split("x ")[1]]+=int(i.split("x ")[0])
@@ -367,10 +349,9 @@ def get_relatorio_produtos_por_turma(data_filtro, turno="DIA INTEIRO"):
         rows = conn.execute(query, (f"{data_filtro}%",)).fetchall()
         dfp = pd.read_sql_query("SELECT nome,valor FROM alimentos", conn); preco_map = dict(zip(dfp['nome'], dfp['valor']))
     except: return {}
-    conn.close()
-    dados_turmas = {}
-    for turma, itens, data_hora in rows:
-        if not validar_horario_turno(data_hora, turno): continue
+    conn.close(); dados_turmas = {}
+    for turma, itens, dh in rows:
+        if not validar_horario_turno(dh, turno): continue
         if not turma: turma = "SEM TURMA"
         if turma not in dados_turmas: dados_turmas[turma] = Counter()
         if itens:
@@ -447,10 +428,9 @@ def main_menu():
     c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
     if c1.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
     if c2.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
-    if c3.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
+    if c3.button("SALDO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
     if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
     if c5.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
-    # BOTÃO ACESSO (NOVO)
     if c6.button("🔑 ACESSO", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
 
     menu=st.session_state.get('menu')
@@ -614,7 +594,7 @@ def main_menu():
     if menu == 'hist':
         st.markdown("---"); st.subheader("📜 Extrato e Histórico")
         c1, c2 = st.columns(2)
-        if c1.button("📜 VER EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
+        if c1.button("📜 EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
         if c2.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state['hist_mode'] = 'cancel'; st.session_state['hist_id'] = None
 
         df = get_all_alunos()
