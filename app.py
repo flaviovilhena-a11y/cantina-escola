@@ -5,8 +5,8 @@ import shutil
 import os
 import binascii
 import time
-import requests # <--- NOVO: Para falar com a API do Brevo
-import threading # <--- NOVO: Para enviar sem travar a tela
+import requests
+import threading
 from datetime import datetime, timedelta, date
 from collections import Counter
 
@@ -14,10 +14,10 @@ from collections import Counter
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
 
 # ==========================================
-#    CONFIGURAÇÃO DO BREVO (E-MAIL) - PREENCHA AQUI!
+#    CONFIGURAÇÃO DO BREVO (E-MAIL)
 # ==========================================
-BREVO_API_KEY = "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" # <--- COLE SUA CHAVE DO BREVO AQUI DENTRO DAS ASPAS
-EMAIL_REMETENTE = "cantina@peixinhodourado.g12.br" # <--- SEU E-MAIL CADASTRADO NO BREVO
+BREVO_API_KEY = "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"
+EMAIL_REMETENTE = "cantina@peixinhodourado.g12.br" 
 NOME_REMETENTE = "Cantina Peixinho Dourado"
 # ==========================================
 
@@ -49,55 +49,28 @@ def init_db():
 
 # --- FUNÇÃO DE ENVIO DE E-MAIL (THREAD) ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
-    """Função que roda em segundo plano para não travar o sistema"""
-    if not email_destino or "@" not in str(email_destino):
-        return # Não faz nada se não tiver e-mail válido
-
+    if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
-    headers = {
-        "accept": "application/json",
-        "api-key": BREVO_API_KEY,
-        "content-type": "application/json"
-    }
+    headers = {"accept": "application/json", "api-key": BREVO_API_KEY, "content-type": "application/json"}
     payload = {
         "sender": {"name": NOME_REMETENTE, "email": EMAIL_REMETENTE},
         "to": [{"email": email_destino, "name": nome_aluno}],
         "subject": assunto,
-        "htmlContent": f"""
-        <html><body>
-            <h3>Olá, responsável por {nome_aluno}!</h3>
-            <p>{mensagem_html}</p>
-            <hr>
-            <p style='font-size:12px; color:gray'>Este é um aviso automático da Cantina Peixinho Dourado.</p>
-        </body></html>
-        """
+        "htmlContent": f"<html><body><h3>Olá, responsável por {nome_aluno}!</h3><p>{mensagem_html}</p><hr><p style='font-size:12px; color:gray'>Aviso automático da Cantina Peixinho Dourado.</p></body></html>"
     }
-    
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        # Para debug (opcional): print(response.text)
-    except Exception as e:
-        print(f"Erro ao enviar email: {e}")
+    try: requests.post(url, json=payload, headers=headers)
+    except: pass
 
 def disparar_alerta(aluno_id, tipo, valor, detalhes):
-    """Busca o email do aluno e dispara a thread"""
     try:
-        conn = sqlite3.connect(DB_FILE)
-        c = conn.cursor()
-        c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,))
-        dados = c.fetchone()
-        conn.close()
-
+        conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+        c.execute("SELECT nome, email, saldo FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone(); conn.close()
         if dados:
             nome, email, saldo_atual = dados
-            if email and len(email) > 5:
-                assunto = f"🔔 Cantina: Nova {tipo} de R$ {valor:.2f}"
-                msg = f"Uma <b>{tipo}</b> foi realizada agora.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}"
-                
-                # Inicia o processo em paralelo (fundo)
-                threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, assunto, msg)).start()
-    except:
-        pass # Silencia erros para não parar o sistema
+            if email and len(str(email)) > 5:
+                msg = f"Uma <b>{tipo}</b> foi realizada.<br><br><b>Detalhes:</b> {detalhes}<br><b>Valor:</b> R$ {valor:.2f}<br><br><b>Saldo Atual:</b> R$ {saldo_atual:.2f}"
+                threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, f"🔔 Cantina: {tipo} R$ {valor:.2f}", msg)).start()
+    except: pass
 
 # --- CLASSE PIX ---
 class PixPayload:
@@ -106,7 +79,7 @@ class PixPayload:
     def _crc(self,p):
         c=0xFFFF; pl=0x1021
         for b in p.encode("utf-8"):
-            c^=(b<<8)
+            c^=(b<<8); 
             for _ in range(8): c=(c<<1)^pl if c&0x8000 else c<<1
             c&=0xFFFF
         return f"{c:04X}"
@@ -115,22 +88,9 @@ class PixPayload:
         return p+self._crc(p)
 
 # --- FUNÇÕES DB ---
-def get_all_alunos(): 
-    conn=sqlite3.connect(DB_FILE)
-    try: df=pd.read_sql_query("SELECT * FROM alunos",conn)
-    except: df=pd.DataFrame()
-    conn.close(); return df
-
-def get_alunos_por_turma(t): 
-    conn=sqlite3.connect(DB_FILE)
-    df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,))
-    conn.close(); return df
-
-def get_vendas_hoje_turma(t): 
-    conn=sqlite3.connect(DB_FILE)
-    df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%"))
-    conn.close(); return df
-
+def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
+def get_alunos_por_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos WHERE turma=? ORDER BY nome ASC",conn,params=(t,)); conn.close(); return df
+def get_vendas_hoje_turma(t): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE a.turma=? AND t.data_hora LIKE ? ORDER BY t.id DESC",conn,params=(t,datetime.now().strftime("%d/%m/%Y")+"%")); conn.close(); return df
 def get_historico_preferencias(aid):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE aluno_id=? ORDER BY id DESC LIMIT 10",(aid,)); r=c.fetchall(); conn.close(); cnt=Counter()
     for row in r: 
@@ -140,32 +100,15 @@ def get_historico_preferencias(aid):
                 except: pass
     return cnt
 
-# --- FUNÇÕES DB (ESCRITA) ---
-def update_saldo_aluno(id,s): 
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id))
-    conn.commit(); conn.close()
-
-def registrar_venda(aid,i,v): 
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S")))
-    conn.commit(); conn.close()
-
+def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
+def registrar_venda(aid,i,v): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"))); conn.commit(); conn.close()
 def registrar_recarga(aid,v,m,n=None): 
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"),m,n))
-    c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]
-    c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid))
-    conn.commit(); conn.close()
-
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,datetime.now().strftime("%d/%m/%Y %H:%M:%S"),m,n))
+    c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
 def cancelar_venda_db(tid, aid, valor):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
-    c.execute("DELETE FROM transacoes WHERE id = ?", (tid,))
-    c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]
-    c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid))
-    conn.commit(); conn.close()
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
-# --- FUNÇÕES DE FILTRO E RELATÓRIO ---
+# --- FILTROS E RELATÓRIOS ---
 def calcular_data_corte(filtro):
     hoje = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
     if filtro == "HOJE": return hoje
@@ -177,10 +120,7 @@ def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close()
-    
-    dc = calcular_data_corte(filtro)
-    ext = []
-    
+    dc = calcular_data_corte(filtro); ext = []
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"COMPRA","Descrição":i[1],"Valor":-i[2]})
@@ -191,19 +131,16 @@ def get_extrato_aluno(aid, filtro):
     return pd.DataFrame()
 
 def get_vendas_cancelar(aid, filtro):
-    conn=sqlite3.connect(DB_FILE)
-    dc = calcular_data_corte(filtro)
+    conn=sqlite3.connect(DB_FILE); dc = calcular_data_corte(filtro)
     try:
-        query = "SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC"
-        df = pd.read_sql_query(query, conn, params=(aid,))
+        df = pd.read_sql_query("SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC", conn, params=(aid,))
         if not df.empty and dc:
-            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S")
-            df = df[df['dt_obj'] >= dc]
+            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S"); df = df[df['dt_obj'] >= dc]
     except: df = pd.DataFrame()
     conn.close(); return df
 
-def get_relatorio_produtos(data_filtro):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{data_filtro}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
+def get_relatorio_produtos(df):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{df}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
     for r in rs:
         if r[0]: 
             for i in r[0].split(", "):
@@ -214,29 +151,27 @@ def get_relatorio_produtos(data_filtro):
     if dd: return pd.DataFrame(dd).sort_values("Qtd Vendida",ascending=False),td
     return pd.DataFrame(),0.0
 
-def get_relatorio_alunos_dia(data_filtro):
+def get_relatorio_alunos_dia(df):
     conn=sqlite3.connect(DB_FILE)
-    q='''SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC'''
-    try: d=pd.read_sql_query(q,conn,params=(f"{data_filtro}%",))
+    try: 
+        d=pd.read_sql_query("SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC",conn,params=(f"{df}%",))
+        if not d.empty:
+            d['Hora']=d['data_hora'].apply(lambda x:x.split(' ')[1]); d=d[['Hora','nome','itens','valor_total']]; d.columns=['Hora','Aluno','Produtos','Valor']
+            d=pd.concat([d,pd.DataFrame([{'Hora':'','Aluno':'TOTAL GERAL','Produtos':'','Valor':d['Valor'].sum()}])],ignore_index=True)
     except: d=pd.DataFrame()
-    conn.close()
-    if not d.empty:
-        d['Hora']=d['data_hora'].apply(lambda x:x.split(' ')[1]); d=d[['Hora','nome','itens','valor_total']]; d.columns=['Hora','Aluno','Produtos','Valor']
-        d=pd.concat([d,pd.DataFrame([{'Hora':'','Aluno':'TOTAL GERAL','Produtos':'','Valor':d['Valor'].sum()}])],ignore_index=True)
-    return d
+    conn.close(); return d
 
-def get_relatorio_recargas_dia(data_filtro):
+def get_relatorio_recargas_dia(df):
     conn = sqlite3.connect(DB_FILE)
-    query = '''SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor FROM recargas r JOIN alunos a ON r.aluno_id = a.id WHERE r.data_hora LIKE ? ORDER BY r.data_hora ASC'''
     try:
-        df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
-        if not df.empty:
-            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1]); df = df[['Hora', 'nome', 'metodo_pagamento', 'valor']]; df.columns = ['Hora', 'Aluno', 'Método', 'Valor']
-            df = pd.concat([df, pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':df['Valor'].sum()}])], ignore_index=True)
-    except: df = pd.DataFrame()
-    conn.close(); return df
+        d = pd.read_sql_query("SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor FROM recargas r JOIN alunos a ON r.aluno_id = a.id WHERE r.data_hora LIKE ? ORDER BY r.data_hora ASC", conn, params=(f"{df}%",))
+        if not d.empty:
+            d['Hora'] = d['data_hora'].apply(lambda x: x.split(' ')[1]); d = d[['Hora', 'nome', 'metodo_pagamento', 'valor']]; d.columns = ['Hora', 'Aluno', 'Método', 'Valor']
+            d = pd.concat([d, pd.DataFrame([{'Hora':'','Aluno':'TOTAL DO DIA','Método':'','Valor':d['Valor'].sum()}])], ignore_index=True)
+    except: d = pd.DataFrame()
+    conn.close(); return d
 
-# --- CRUD ALIMENTOS/ALUNOS ---
+# --- CRUD ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
 def update_alimento_db(id,n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alimentos SET nome=?,valor=?,tipo=? WHERE id=?',(n,v,t,id)); conn.commit(); conn.close()
 def delete_alimento_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('DELETE FROM alimentos WHERE id=?',(id,)); conn.commit(); conn.close()
@@ -323,7 +258,11 @@ def main_menu():
                     em=st.text_input("E-mail Responsável")
                     c6,c7,c8=st.columns(3); t1=c6.text_input("Telefone 1"); t2=c7.text_input("Telefone 2"); t3=c8.text_input("Telefone 3")
                     sl=st.number_input("Saldo Inicial (R$)",0.0)
-                    if st.form_submit_button("CONFIRMAR CADASTRO"): upsert_aluno(nm,ser,tr,tur,nas,em,t1,t2,t3,sl); st.success("Salvo!"); st.rerun()
+                    if st.form_submit_button("CONFIRMAR CADASTRO"): 
+                        try:
+                            upsert_aluno(nm,ser,tr,tur,nas,em,t1,t2,t3,sl)
+                            st.success("✅ Aluno cadastrado com sucesso!"); time.sleep(1.5); st.rerun()
+                        except Exception as e: st.error(f"❌ Erro ao cadastrar: {e}")
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
@@ -336,7 +275,11 @@ def main_menu():
                         c3,c4,c5=st.columns(3); ser=c3.text_input("Série",d['serie'] or ""); tr=c4.text_input("Turma",d['turma']); 
                         ts=["Matutino","Vespertino","Integral"]; idx=ts.index(d['turno']) if d['turno'] in ts else 0; tur=c5.selectbox("Turno",ts,index=idx)
                         em=st.text_input("E-mail",d['email'] or ""); c6,c7,c8=st.columns(3); t1=c6.text_input("Tel 1",d['telefone1'] or ""); t2=c7.text_input("Tel 2",d['telefone2'] or ""); t3=c8.text_input("Tel 3",d['telefone3'] or ""); sl=st.number_input("Saldo",value=float(d['saldo']))
-                        if st.form_submit_button("CONFIRMAR ALTERAÇÕES"): update_aluno_manual(id,nm,ser,tr,tur,str(nas) if nas else None,em,t1,t2,t3,sl); st.success("Atualizado!"); st.rerun()
+                        if st.form_submit_button("CONFIRMAR ALTERAÇÕES"):
+                            try:
+                                update_aluno_manual(id,nm,ser,tr,tur,str(nas) if nas else None,em,t1,t2,t3,sl)
+                                st.success("✅ Dados atualizados com sucesso!"); time.sleep(1.5); st.rerun()
+                            except Exception as e: st.error(f"❌ Erro ao atualizar: {e}")
             elif act=="EXCLUIR ALUNO":
                 df=get_all_alunos()
                 if not df.empty:
@@ -352,7 +295,7 @@ def main_menu():
     if menu == 'recarga':
         st.markdown("---"); st.subheader("💰 Recarga")
         c1,c2=st.columns(2)
-        if c1.button("📝 MANUAL (Todas Opções)",use_container_width=True): st.session_state['rec_mode']='manual'; st.session_state['pix_data']=None
+        if c1.button("📝 RECEBIMENTO MANUAL",use_container_width=True): st.session_state['rec_mode']='manual'; st.session_state['pix_data']=None
         if c2.button("💠 PIX (QR CODE)",use_container_width=True): st.session_state['rec_mode']='pix'; st.session_state['pix_data']=None
 
         df=get_all_alunos()
@@ -526,9 +469,11 @@ def realizar_venda_form(aid, origin=None):
             for i,q in qs.items():
                 if q>0: it=df[df['id']==i].iloc[0]; t+=it['valor']*q; its.append(f"{q}x {it['nome']}")
             if t>0: 
-                update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
-                disparar_alerta(aid, "Compra", t, ", ".join(its))
-                st.success("OK!"); st.session_state['aid_venda']=None; st.rerun()
+                try:
+                    update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
+                    disparar_alerta(aid, "Compra", t, ", ".join(its))
+                    st.success("✅ Venda realizada com sucesso!"); time.sleep(1.5); st.session_state['aid_venda']=None; st.rerun()
+                except Exception as e: st.error(f"❌ Erro na venda: {e}")
             else: st.warning("Selecione algo.")
         
         if back:
