@@ -119,15 +119,39 @@ def calcular_data_corte(filtro):
 def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
-    c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall(); conn.close()
+    c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
+    
+    # Busca tabela de preços para enriquecer o extrato
+    dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor']))
+    conn.close()
+    
     dc = calcular_data_corte(filtro); ext = []
+    
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"COMPRA","Descrição":i[1],"Valor":-i[2]})
+        if not dc or dt>=dc: 
+            # Formata itens com preço: "2x Coxinha (R$ 5.00)"
+            itens_str = i[1]
+            itens_com_preco = []
+            if itens_str:
+                for item in itens_str.split(", "):
+                    try:
+                        qtd, nome = item.split("x ")
+                        p_unit = preco_map.get(nome, 0.0)
+                        itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
+                    except: itens_com_preco.append(item)
+            desc_final = ", ".join(itens_com_preco)
+            
+            ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":desc_final,"Valor":-i[2]})
+            
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
-        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Descrição":f"Via {i[2]}","Valor":i[1]})
-    if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
+        if not dc or dt>=dc: ext.append({"Data":dt,"Tipo":"RECARGA","Detalhes":f"Via {i[2]}","Valor":i[1]})
+        
+    if ext: 
+        df=pd.DataFrame(ext).sort_values("Data",ascending=False)
+        df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M"))
+        return df
     return pd.DataFrame()
 
 def get_vendas_cancelar(aid, filtro):
@@ -392,7 +416,8 @@ def main_menu():
                     filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
                     if st.button("EXIBIR"):
                         ext=get_extrato_aluno(al['id'], filt)
-                        if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
+                        if not ext.empty: 
+                            st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                         else: st.info("Vazio.")
 
             elif st.session_state.get('hist_mode') == 'cancel':
