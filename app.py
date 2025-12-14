@@ -249,7 +249,7 @@ def get_relatorio_alunos_dia(data_filtro):
     conn.close()
     return df
 
-# --- FUNÇÕES DE ALIMENTOS E ALUNOS ---
+# --- FUNÇÕES DE ALIMENTOS E ALUNOS (CRUD) ---
 def add_alimento_db(nome, valor, tipo):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('INSERT INTO alimentos (nome, valor, tipo) VALUES (?, ?, ?)', (nome, valor, tipo)); conn.commit(); conn.close()
 def update_alimento_db(id, nome, valor, tipo):
@@ -261,16 +261,34 @@ def get_all_alimentos():
     try: df = pd.read_sql_query("SELECT * FROM alimentos", conn)
     except: df = pd.DataFrame()
     conn.close(); return df
+
 def upsert_aluno(nome, serie, turma, turno, nasck, email, tel1, tel2, tel3, saldo_inicial):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("SELECT id FROM alunos WHERE nome = ?", (nome,))
     data = c.fetchone(); action = ""
+    # Converte Date para String se não for nulo
+    nasc_str = str(nasck) if nasck else None
+    
     if data:
-        c.execute('UPDATE alunos SET turma=?, email=?, telefone1=?, telefone2=?, telefone3=? WHERE nome=?', (turma, email, tel1, tel2, tel3, nome)); action = "atualizado"
+        # Atualiza dados se nome já existe
+        c.execute('''UPDATE alunos SET serie=?, turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=? WHERE nome=?''', 
+                  (serie, turma, turno, nasc_str, email, tel1, tel2, tel3, nome))
+        action = "atualizado"
     else:
-        c.execute('INSERT INTO alunos (nome, serie, turma, turno, nascimento, email, telefone1, telefone2, telefone3, saldo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (nome, serie, turma, turno, str(nasck), email, tel1, tel2, tel3, saldo_inicial)); action = "novo"
+        # Insere novo
+        c.execute('''INSERT INTO alunos (nome, serie, turma, turno, nascimento, email, telefone1, telefone2, telefone3, saldo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                  (nome, serie, turma, turno, nasc_str, email, tel1, tel2, tel3, saldo_inicial))
+        action = "novo"
     conn.commit(); conn.close(); return action
-def update_aluno_manual(id, nome, serie, turma, turno, email, t1, t2, t3, saldo):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute('UPDATE alunos SET nome=?, serie=?, turma=?, turno=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? WHERE id=?', (nome, serie, turma, turno, email, t1, t2, t3, saldo, id)); conn.commit(); conn.close()
+
+# --- FUNÇÃO DE ATUALIZAÇÃO CORRIGIDA (INCLUINDO NASCIMENTO) ---
+def update_aluno_manual(id, nome, serie, turma, turno, nasc_str, email, t1, t2, t3, saldo):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''UPDATE alunos SET nome=?, serie=?, turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? WHERE id=?''', 
+              (nome, serie, turma, turno, nasc_str, email, t1, t2, t3, saldo, id))
+    conn.commit()
+    conn.close()
+
 def delete_aluno_db(id):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?", (id,)); conn.commit(); conn.close()
 def delete_turma_db(turma):
@@ -333,7 +351,7 @@ def main_menu():
             if act=="NOVO":
                 with st.form("nf"): 
                     n=st.text_input("Nome"); v=st.number_input("Valor",0.0,step=0.5); t=st.selectbox("Tipo",["ALIMENTO","BEBIDA"])
-                    if st.form_submit_button("SALVAR"): add_alimento_db(n,v,t); st.success("Ok!"); st.rerun()
+                    if st.form_submit_button("CADASTRAR"): add_alimento_db(n,v,t); st.success("Ok!"); st.rerun()
                 if not df.empty: st.dataframe(df[['nome','valor','tipo']],hide_index=True)
             elif act=="ALTERAR" and not df.empty:
                 df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Item",df['l'].unique()); id=int(s.split(' - ')[0]); d=df[df['id']==id].iloc[0]
@@ -345,7 +363,6 @@ def main_menu():
                 if st.button("CONFIRMAR"): delete_alimento_db(id); st.success("Apagado!"); st.rerun()
 
         if st.session_state.get('sub') == 'user':
-            # --- MUDANÇA NOVO -> NOVO ALUNO ---
             act=st.radio("Ação",["IMPORTAR CSV","NOVO ALUNO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
             
             if act=="IMPORTAR CSV":
@@ -360,18 +377,82 @@ def main_menu():
                         st.success(f"{n} novos, {a} atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
             
-            # --- CONDICIONAL ATUALIZADA ---
+            # --- NOVO ALUNO (COM TODOS OS CAMPOS) ---
             elif act=="NOVO ALUNO":
+                st.write("📝 **Ficha de Cadastro Completa**")
                 with st.form("nal"):
-                    nm=st.text_input("Nome"); t=st.text_input("Turma"); s=st.number_input("Saldo",0.0); st.form_submit_button("SALVAR", on_click=lambda: upsert_aluno(nm,'',t,'',None,'',None,None,None,s))
+                    c1, c2 = st.columns([3, 1])
+                    nm = c1.text_input("Nome Completo")
+                    nas = c2.date_input("Data Nascimento", value=None, min_value=date(1990,1,1))
+                    
+                    c3, c4, c5 = st.columns(3)
+                    ser = c3.text_input("Série")
+                    tr = c4.text_input("Turma")
+                    tur = c5.selectbox("Turno", ["Matutino", "Vespertino", "Integral"])
+                    
+                    em = st.text_input("E-mail Responsável")
+                    
+                    c6, c7, c8 = st.columns(3)
+                    tel1 = c6.text_input("Telefone 1")
+                    tel2 = c7.text_input("Telefone 2")
+                    tel3 = c8.text_input("Telefone 3")
+                    
+                    sl = st.number_input("Saldo Inicial (R$)", value=0.0)
+                    
+                    if st.form_submit_button("CONFIRMAR CADASTRO"): 
+                        upsert_aluno(nm, ser, tr, tur, nas, em, tel1, tel2, tel3, sl)
+                        st.success("Aluno salvo com sucesso!")
+                        st.rerun()
             
+            # --- ATUALIZAR (COM TODOS OS CAMPOS) ---
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
-                    df=df.sort_values('nome'); df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Aluno",df['l'].unique()); id=int(s.split(' - ')[0]); d=df[df['id']==id].iloc[0]
+                    df=df.sort_values('nome')
+                    df['l']=df['id'].astype(str)+" - "+df['nome']
+                    sel = st.selectbox("Buscar Aluno:", df['l'].unique())
+                    id_a = int(sel.split(' - ')[0])
+                    d = df[df['id']==id_a].iloc[0]
+                    
+                    # Converte data string do banco para objeto date
+                    try:
+                        data_nasc_atual = datetime.strptime(d['nascimento'], '%Y-%m-%d').date()
+                    except:
+                        data_nasc_atual = None
+
+                    st.write("✏️ **Editar Dados**")
                     with st.form("ual"):
-                        nm=st.text_input("Nome",d['nome']); nt=st.text_input("Turma",d['turma']); ns=st.number_input("Saldo",value=float(d['saldo']))
-                        if st.form_submit_button("ATUALIZAR"): update_aluno_manual(id,nm,d['serie'],nt,d['turno'],d['email'],d['telefone1'],d['telefone2'],d['telefone3'],ns); st.success("Feito!"); st.rerun()
+                        c1, c2 = st.columns([3, 1])
+                        nm = c1.text_input("Nome", value=d['nome'])
+                        nas = c2.date_input("Nascimento", value=data_nasc_atual)
+                        
+                        c3, c4, c5 = st.columns(3)
+                        ser = c3.text_input("Série", value=d['serie'] if d['serie'] else "")
+                        tr = c4.text_input("Turma", value=d['turma'])
+                        
+                        # Tenta achar o index do turno atual, senão usa 0
+                        turnos = ["Matutino", "Vespertino", "Integral"]
+                        idx_t = turnos.index(d['turno']) if d['turno'] in turnos else 0
+                        tur = c5.selectbox("Turno", turnos, index=idx_t)
+                        
+                        em = st.text_input("E-mail", value=d['email'] if d['email'] else "")
+                        
+                        c6, c7, c8 = st.columns(3)
+                        t1 = c6.text_input("Tel 1", value=d['telefone1'] if d['telefone1'] else "")
+                        t2 = c7.text_input("Tel 2", value=d['telefone2'] if d['telefone2'] else "")
+                        t3 = c8.text_input("Tel 3", value=d['telefone3'] if d['telefone3'] else "")
+                        
+                        sl = st.number_input("Saldo (R$)", value=float(d['saldo']))
+                        
+                        if st.form_submit_button("CONFIRMAR ALTERAÇÕES"):
+                            # Converte data para string para salvar
+                            nas_str = str(nas) if nas else None
+                            update_aluno_manual(id_a, nm, ser, tr, tur, nas_str, em, t1, t2, t3, sl)
+                            st.success("Dados atualizados!")
+                            st.rerun()
+                else:
+                    st.warning("Sem alunos cadastrados.")
+
             elif act=="EXCLUIR ALUNO":
                 df=get_all_alunos()
                 if not df.empty:
