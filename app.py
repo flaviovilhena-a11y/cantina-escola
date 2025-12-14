@@ -4,6 +4,7 @@ import sqlite3
 import shutil
 import os
 import binascii
+import time  # <--- ADICIONADO AQUI
 from datetime import datetime, timedelta, date
 from collections import Counter
 
@@ -183,23 +184,19 @@ def get_extrato_aluno(aluno_id, dias_filtro):
         return df
     return pd.DataFrame()
 
-# --- FUNÇÕES DE RELATÓRIO (NOVAS) ---
+# --- FUNÇÕES DE RELATÓRIO ---
 def get_relatorio_produtos(data_filtro):
     conn = sqlite3.connect(DB_FILE)
-    # Busca todas as transações da data selecionada
     query = "SELECT itens FROM transacoes WHERE data_hora LIKE ?"
     c = conn.cursor()
     c.execute(query, (f"{data_filtro}%",))
     rows = c.fetchall()
     
-    # Busca tabela de preços atual para calcular totais estimados
     df_precos = pd.read_sql_query("SELECT nome, valor FROM alimentos", conn)
     preco_map = dict(zip(df_precos['nome'], df_precos['valor']))
     conn.close()
 
     qtd_geral = Counter()
-    
-    # Processa string de itens (ex: "2x Coxinha, 1x Suco")
     for r in rows:
         if r[0]:
             itens_lista = r[0].split(", ")
@@ -212,11 +209,9 @@ def get_relatorio_produtos(data_filtro):
                         qtd_geral[nome] += qtd
                 except: continue
     
-    # Monta DataFrame
     dados = []
     total_dia = 0.0
     for nome, qtd in qtd_geral.items():
-        # Usa preço atual do cadastro. Se item foi excluído, usa 0.
         valor_unit = preco_map.get(nome, 0.0) 
         valor_total = valor_unit * qtd
         total_dia += valor_total
@@ -239,7 +234,6 @@ def get_relatorio_alunos_dia(data_filtro):
     '''
     try:
         df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
-        # Formata hora
         if not df.empty:
             df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
             df = df[['Hora', 'nome', 'itens', 'valor_total']]
@@ -298,7 +292,7 @@ def main_menu():
             with open(DB_FILE, "wb") as f:
                 f.write(up.getbuffer())
             st.sidebar.success("✅ Dados importados com sucesso! Reiniciando...")
-            time.sleep(2)
+            time.sleep(2) # Pausa de 2 segundos para ler a mensagem
             st.rerun()
         except Exception as e:
             st.sidebar.error(f"❌ Erro ao importar: {e}")
@@ -308,7 +302,6 @@ def main_menu():
 
     st.header("Painel Principal"); st.write("Usuário: fvilhena")
     
-    # Layout de botões do menu (3 linhas)
     c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
     with c1: 
         if st.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
@@ -319,7 +312,7 @@ def main_menu():
     with c4: 
         if st.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
     with c5:
-        if st.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos') # NOVO
+        if st.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
 
     menu = st.session_state.get('menu')
 
@@ -470,40 +463,29 @@ def main_menu():
                 if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
                 else: st.info("Vazio.")
 
-    # --- MENU RELATÓRIOS (NOVO) ---
+    # --- RELATÓRIOS ---
     if menu == 'relatorios':
-        st.markdown("---"); st.subheader("📊 Relatórios de Vendas")
+        st.markdown("---"); st.subheader("📊 Relatórios")
+        data_sel = st.date_input("Data:", datetime.now()); d_str = data_sel.strftime("%d/%m/%Y")
+        st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
         
-        # Filtro de Data
-        data_selecionada = st.date_input("Selecione a Data:", datetime.now())
-        data_str = data_selecionada.strftime("%d/%m/%Y")
-        st.markdown(f"**Data filtrada:** {data_str}")
-        st.markdown("---")
-
         c1, c2 = st.columns(2)
-        with c1:
-            if st.button("📦 TOTAL PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
-        with c2:
-            if st.button("👥 TOTAL POR ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
+        if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
+        if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
 
         if st.session_state.get('rel_mode') == 'produtos':
-            st.markdown("### Resumo de Produtos Vendidos")
-            df_prod, total_dia = get_relatorio_produtos(data_str)
-            if not df_prod.empty:
-                st.metric("Total Arrecadado (Estimado)", f"R$ {total_dia:.2f}")
-                st.dataframe(df_prod, hide_index=True, use_container_width=True)
-            else:
-                st.info("Nenhuma venda registrada nesta data.")
-
+            df_p, tot = get_relatorio_produtos(d_str)
+            if not df_p.empty:
+                st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
+                st.dataframe(df_p, hide_index=True, use_container_width=True)
+            else: st.info("Nada vendido.")
+        
         elif st.session_state.get('rel_mode') == 'alunos':
-            st.markdown("### Vendas por Aluno")
-            df_alunos = get_relatorio_alunos_dia(data_str)
-            if not df_alunos.empty:
-                total_dia = df_alunos['Valor (R$)'].sum()
-                st.metric("Total Arrecadado (Real)", f"R$ {total_dia:.2f}")
-                st.dataframe(df_alunos, hide_index=True, use_container_width=True)
-            else:
-                st.info("Nenhuma venda registrada nesta data.")
+            df_a = get_relatorio_alunos_dia(d_str)
+            if not df_a.empty:
+                st.metric("Total do Dia (Real)", f"R$ {df_a['Valor (R$)'].sum():.2f}")
+                st.dataframe(df_a, hide_index=True, use_container_width=True)
+            else: st.info("Nada vendido.")
 
 def realizar_venda_form(aid,mode=False):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
