@@ -106,6 +106,25 @@ def get_extrato_aluno(aid,d):
     if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
     return pd.DataFrame()
 
+# --- NOVAS FUNÇÕES CANCELAMENTO ---
+def get_vendas_aluno_hoje(aid):
+    conn=sqlite3.connect(DB_FILE)
+    hoje = datetime.now().strftime("%d/%m/%Y")
+    query = "SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? AND data_hora LIKE ? ORDER BY id DESC"
+    try: df = pd.read_sql_query(query, conn, params=(aid, f"{hoje}%"))
+    except: df = pd.DataFrame()
+    conn.close(); return df
+
+def cancelar_venda_db(tid, aid, valor):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    # 1. Deleta a transação
+    c.execute("DELETE FROM transacoes WHERE id = ?", (tid,))
+    # 2. Devolve o saldo para o aluno
+    c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,))
+    saldo_atual = c.fetchone()[0]
+    c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (saldo_atual + valor, aid))
+    conn.commit(); conn.close()
+
 # --- FUNÇÕES RELATÓRIO ---
 def get_relatorio_produtos(df):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT itens FROM transacoes WHERE data_hora LIKE ?",(f"{df}%",)); rs=c.fetchall(); dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
@@ -168,7 +187,7 @@ def main_menu():
     c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
     if c1.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
     if c2.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
-    if c3.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None)
+    if c3.button("SALDO/HISTÓRICO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view') # Modo view ou cancel
     if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
     if c5.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
 
@@ -304,9 +323,7 @@ def main_menu():
                     if c2.button("⬅️ Voltar"): st.session_state['res_tur']=False; st.rerun()
                 else:
                     c1,c2=st.columns([3,1]); c1.markdown(f"### {tur}"); 
-                    # BOTÃO ENCERRAR TURMA ATUALIZADO
                     if c2.button("🛑 ENCERRAR TURMA", type="primary"): st.session_state['res_tur']=True; st.rerun()
-                    
                     if not st.session_state.get('aid_venda'):
                         df=get_alunos_por_turma(tur); h1,h2,h3=st.columns([3,1,1]); h1.write("Nome"); h2.write("Saldo"); h3.write("Ação")
                         for i,r in df.iterrows():
@@ -319,21 +336,56 @@ def main_menu():
 
     # --- HISTÓRICO ---
     if menu == 'hist':
-        st.markdown("---"); st.subheader("📜 Extrato")
-        if not st.session_state.get('hist_id'):
-            df=get_all_alunos()
-            if not df.empty:
-                df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Aluno",df['l'].unique())
-                if st.button("VER"): st.session_state['hist_id']=int(df[df['l']==s].iloc[0]['id']); st.rerun()
+        st.markdown("---"); st.subheader("📜 Extrato e Histórico")
+        
+        c1, c2 = st.columns(2)
+        if c1.button("📜 VER EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
+        if c2.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state['hist_mode'] = 'cancel'; st.session_state['hist_id'] = None
+
+        df = get_all_alunos()
+        if not df.empty:
+            df = df.sort_values(by='nome'); df['lbl'] = df['nome'] + " | " + df['turma'].astype(str)
+            
+            # --- MODO 1: VER EXTRATO ---
+            if st.session_state.get('hist_mode') == 'view':
+                if not st.session_state.get('hist_id'):
+                    sel = st.selectbox("Selecione o Aluno para ver o Extrato:", df['lbl'].unique())
+                    if st.button("ABRIR EXTRATO"): st.session_state['hist_id'] = int(df[df['lbl'] == sel].iloc[0]['id']); st.rerun()
+                else:
+                    if st.button("⬅️ Trocar Aluno"): st.session_state['hist_id'] = None; st.rerun()
+                    conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
+                    st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
+                    f=st.selectbox("Filtro",["7 DIAS","30 DIAS","TODOS"]); m={"7 DIAS":7,"30 DIAS":30,"TODOS":"TODOS"}
+                    if st.button("EXIBIR"):
+                        ext=get_extrato_aluno(al['id'],m[f])
+                        if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
+                        else: st.info("Vazio.")
+
+            # --- MODO 2: CANCELAR VENDA ---
+            elif st.session_state.get('hist_mode') == 'cancel':
+                st.info("⚠️ Cancelamento de vendas realizadas HOJE")
+                sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
+                id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
+                
+                vendas_hoje = get_vendas_aluno_hoje(id_aluno)
+                
+                if not vendas_hoje.empty:
+                    # Cria lista formatada para seleção
+                    vendas_hoje['desc'] = vendas_hoje.apply(lambda x: f"ID: {x['id']} | {x['data_hora'].split()[1]} | R$ {x['valor_total']:.2f} | {x['itens']}", axis=1)
+                    venda_sel = st.selectbox("Selecione a compra para cancelar:", vendas_hoje['desc'])
+                    
+                    if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
+                        id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", ""))
+                        valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
+                        
+                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
+                        st.success(f"Venda cancelada e R$ {valor_estorno:.2f} devolvidos ao saldo!")
+                        time.sleep(2)
+                        st.rerun()
+                else:
+                    st.warning("Este aluno não realizou compras hoje.")
         else:
-            if st.button("⬅️ Voltar"): st.session_state['hist_id']=None; st.rerun()
-            conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
-            st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
-            f=st.selectbox("Filtro",["7 DIAS","30 DIAS","TODOS"]); m={"7 DIAS":7,"30 DIAS":30,"TODOS":"TODOS"}
-            if st.button("EXIBIR"):
-                ext=get_extrato_aluno(al['id'],m[f])
-                if not ext.empty: st.dataframe(ext.style.map(lambda v:f"color:{'red' if v<0 else 'green'}",subset=['Valor']),hide_index=True,use_container_width=True)
-                else: st.info("Vazio.")
+            st.warning("Sem alunos cadastrados.")
 
     # --- RELATÓRIOS ---
     if menu == 'relatorios':
