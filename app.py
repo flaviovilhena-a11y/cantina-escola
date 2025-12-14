@@ -7,6 +7,7 @@ import binascii
 import time
 import requests
 import threading
+import streamlit.components.v1 as components # <--- NOVO: Para funcionalidade de imprimir
 from datetime import datetime, timedelta, date
 from collections import Counter
 
@@ -130,9 +131,8 @@ def get_extrato_aluno(aid, filtro):
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S")
         if not dc or dt>=dc: 
-            # Formata itens com preço: "2x Coxinha (R$ 5.00)"
-            itens_str = i[1]
-            itens_com_preco = []
+            # Formata itens com preço
+            itens_str = i[1]; itens_com_preco = []
             if itens_str:
                 for item in itens_str.split(", "):
                     try:
@@ -141,7 +141,6 @@ def get_extrato_aluno(aid, filtro):
                         itens_com_preco.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_com_preco.append(item)
             desc_final = ", ".join(itens_com_preco)
-            
             ext.append({"Data":dt,"Tipo":"COMPRA","Detalhes":desc_final,"Valor":-i[2]})
             
     for i in r:
@@ -174,6 +173,57 @@ def get_relatorio_produtos(df):
     for n,q in qg.items(): v=pm.get(n,0.0)*q; td+=v; dd.append({"Produto":n,"Qtd Vendida":q,"Valor Total (R$)":v})
     if dd: return pd.DataFrame(dd).sort_values("Qtd Vendida",ascending=False),td
     return pd.DataFrame(),0.0
+
+def get_relatorio_produtos_por_turma(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    # Busca transações + turma do aluno
+    query = '''
+        SELECT a.turma, t.itens 
+        FROM transacoes t 
+        JOIN alunos a ON t.aluno_id = a.id 
+        WHERE t.data_hora LIKE ?
+        ORDER BY a.turma ASC
+    '''
+    try:
+        rows = conn.execute(query, (f"{data_filtro}%",)).fetchall()
+        dfp = pd.read_sql_query("SELECT nome,valor FROM alimentos", conn)
+        preco_map = dict(zip(dfp['nome'], dfp['valor']))
+    except: return {}
+    conn.close()
+
+    # Agrega: { 'Turma A': Counter({'Coxinha': 5, ...}), 'Turma B': ... }
+    dados_turmas = {}
+    
+    for turma, itens in rows:
+        if not turma: turma = "SEM TURMA"
+        if turma not in dados_turmas: dados_turmas[turma] = Counter()
+        
+        if itens:
+            for item in itens.split(", "):
+                try:
+                    parts = item.split("x ")
+                    qtd = int(parts[0])
+                    nome = parts[1]
+                    dados_turmas[turma][nome] += qtd
+                except: pass
+                
+    # Transforma em DataFrames para exibição
+    resultados = {}
+    for turma, contador in dados_turmas.items():
+        lista_itens = []
+        total_turma = 0.0
+        for nome, qtd in contador.items():
+            valor_item = preco_map.get(nome, 0.0) * qtd
+            total_turma += valor_item
+            lista_itens.append({"Produto": nome, "Qtd": qtd, "Total": valor_item})
+        
+        if lista_itens:
+            df = pd.DataFrame(lista_itens).sort_values("Produto")
+            # Adiciona linha de total
+            df = pd.concat([df, pd.DataFrame([{"Produto":"TOTAL TURMA", "Qtd":"", "Total": total_turma}])], ignore_index=True)
+            resultados[turma] = df
+            
+    return resultados
 
 def get_relatorio_alunos_dia(df):
     conn=sqlite3.connect(DB_FILE)
@@ -449,22 +499,35 @@ def main_menu():
         if c3.button("💰 RECARGAS", use_container_width=True): st.session_state['rel_mode'] = 'recargas'
 
         if st.session_state.get('rel_mode') == 'produtos':
-            df_p, tot = get_relatorio_produtos(d_str)
-            if not df_p.empty:
-                st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
-                st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-            else: st.info("Nada vendido.")
+            vis_mode = st.radio("Modo de Visualização:", ["VISÃO GERAL (TOTAL)", "DETALHADO POR TURMA"], horizontal=True)
+            if vis_mode == "VISÃO GERAL (TOTAL)":
+                df_p, tot = get_relatorio_produtos(d_str)
+                if not df_p.empty:
+                    st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
+                    st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                else: st.info("Nada vendido.")
+            else:
+                res_turmas = get_relatorio_produtos_por_turma(d_str)
+                if res_turmas:
+                    for turma, df_t in res_turmas.items():
+                        st.markdown(f"### {turma}")
+                        st.dataframe(df_t, column_config={"Total": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                else: st.info("Nada vendido.")
+            
+            if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.print()</script>", height=0)
         
         elif st.session_state.get('rel_mode') == 'alunos':
             df_a = get_relatorio_alunos_dia(d_str)
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.print()</script>", height=0)
             else: st.info("Nada vendido.")
 
         elif st.session_state.get('rel_mode') == 'recargas':
             df_r = get_relatorio_recargas_dia(d_str)
             if not df_r.empty:
                 st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                if st.button("🖨️ IMPRIMIR RELATÓRIO"): components.html("<script>window.print()</script>", height=0)
             else: st.info("Nenhuma recarga.")
 
 # --- FUNÇÃO DE VENDA ---
