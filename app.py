@@ -10,6 +10,7 @@ import threading
 import streamlit.components.v1 as components
 from datetime import datetime, timedelta, date
 from collections import Counter
+from fpdf import FPDF # <--- NECESSÁRIO: pip install fpdf
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Cantina Peixinho Dourado", layout="centered")
@@ -47,6 +48,88 @@ def init_db():
     try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT"); c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
     except: pass
     conn.commit(); conn.close()
+
+# --- CLASSE PARA GERAR PDF TÉRMICO (80mm) ---
+class PDFTermico(FPDF):
+    def __init__(self, titulo, dados_df):
+        # Largura 80mm. Altura calculada dinamicamente (10mm cabeçalho + 5mm por linha + 20mm rodapé)
+        altura_estimada = 40 + (len(dados_df) * 6)
+        super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
+        self.titulo = titulo
+        self.dados = dados_df
+        self.set_margins(2, 2, 2)
+        self.add_page()
+
+    def header(self):
+        self.set_font('Courier', 'B', 10)
+        self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
+        self.set_font('Courier', '', 8)
+        self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
+        self.cell(0, 4, f'{datetime.now().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        self.ln(2)
+        self.cell(0, 0, border="T", ln=1) # Linha horizontal
+        self.ln(2)
+        self.set_font('Courier', 'B', 9)
+        self.multi_cell(0, 4, self.titulo.upper(), 0, 'C')
+        self.ln(2)
+
+    def footer(self):
+        self.set_y(-10)
+        self.set_font('Courier', 'I', 6)
+        self.cell(0, 4, 'Sistema de Gestao Escolar', 0, 0, 'C')
+
+    def gerar_tabela(self):
+        self.set_font('Courier', '', 7)
+        
+        # Cabeçalho da tabela dinâmico
+        cols = self.dados.columns.tolist()
+        
+        # Ajuste de largura das colunas para caber em 76mm (80 - 2 - 2)
+        largura_util = 76
+        largura_col = largura_util / len(cols)
+        
+        # Imprime Cabeçalhos
+        self.set_font('Courier', 'B', 7)
+        for col in cols:
+            # Trata caracteres para não quebrar no PDF (remove acentos básicos se necessário)
+            txt = str(col)[:15] # Corta nomes muito longos
+            self.cell(largura_col, 4, txt, 0, 0, 'L')
+        self.ln()
+        
+        # Imprime Dados
+        self.set_font('Courier', '', 7)
+        for index, row in self.dados.iterrows():
+            for col in cols:
+                valor = str(row[col])
+                # Formatação especial para dinheiro
+                if isinstance(row[col], (int, float)) and ('Valor' in col or 'Total' in col):
+                    valor = f"{row[col]:.2f}"
+                
+                # Se for muito longo, corta para não quebrar o layout da térmica
+                self.cell(largura_col, 4, valor[:20], 0, 0, 'L')
+            self.ln()
+            
+        self.ln(4)
+        self.cell(0, 0, border="T", ln=1) # Linha final
+
+# --- FUNÇÃO HELPER PARA DOWNLOAD PDF ---
+def criar_botao_pdf_termico(df, titulo_relatorio):
+    if df.empty: return
+    try:
+        pdf = PDFTermico(titulo_relatorio, df)
+        pdf.gerar_tabela()
+        # Gera string binária
+        pdf_bytes = pdf.output(dest='S').encode('latin-1', 'ignore') 
+        
+        st.download_button(
+            label="🧾 BAIXAR PDF TÉRMICO (Bematech)",
+            data=pdf_bytes,
+            file_name=f"cupom_{int(time.time())}.pdf",
+            mime="application/pdf",
+            type="primary"
+        )
+    except Exception as e:
+        st.error(f"Erro ao gerar PDF: {e}")
 
 # --- FUNÇÃO DE ENVIO DE E-MAIL (THREAD) ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
@@ -217,55 +300,23 @@ def get_relatorio_recargas_dia(df):
     except: d = pd.DataFrame()
     conn.close(); return d
 
-# --- FUNCIONALIDADE DE IMPRESSÃO ---
-def acionar_impressao(tipo="laser"):
-    if tipo == "laser":
-        # CSS para Impressão A4 Padrão
-        st.markdown("""
-            <style>
-            @media print {
-                [data-testid="stSidebar"], .stButton, .stRadio, header, footer {display: none !important;}
-                .block-container {padding: 1cm !important;}
-                body {font-size: 12pt;}
-            }
-            </style>
-            <script>window.parent.print()</script>
-        """, unsafe_allow_html=True)
-        components.html("<script>window.parent.print()</script>", height=0)
-        
-    elif tipo == "termica":
-        # CSS para Impressão Térmica (Bematech 80mm)
-        st.markdown("""
-            <style>
-            @media print {
-                @page { margin: 0; size: 80mm auto; }
-                [data-testid="stSidebar"], .stButton, .stRadio, header, footer {display: none !important;}
-                .block-container {
-                    padding: 0 !important; 
-                    margin: 0 !important;
-                    width: 100% !important;
-                    max-width: 100% !important;
-                }
-                body {
-                    width: 80mm;
-                    margin: 0;
-                    font-family: 'Courier New', monospace;
-                    font-size: 10px;
-                }
-                h1, h2, h3 { font-size: 12px !important; text-align: center; margin: 5px 0; }
-                p, div { font-size: 10px !important; }
-                table { width: 100% !important; border-collapse: collapse; }
-                th, td { 
-                    border-bottom: 1px dashed #000; 
-                    padding: 2px !important; 
-                    font-size: 9px !important; 
-                    text-align: left;
-                }
-                .stDataFrame { border: none !important; }
-            }
-            </style>
-        """, unsafe_allow_html=True)
-        components.html("<script>window.parent.print()</script>", height=0)
+# --- FUNCIONALIDADE DE IMPRESSÃO (NOVA JANELA) ---
+def acionar_impressao_js():
+    # Cria uma nova janela apenas com os dados essenciais para impressão A4
+    st.components.v1.html(
+        """<script>
+        var w = window.open();
+        w.document.write('<html><head><title>Relatorio</title>');
+        w.document.write('<style>body{font-family:sans-serif;} table{width:100%;border-collapse:collapse;} th,td{border:1px solid #ddd;padding:8px;text-align:left;} tr:nth-child(even){background-color:#f2f2f2;} th{background-color:#04AA6D;color:white;}</style>');
+        w.document.write('</head><body>');
+        w.document.write(window.parent.document.getElementsByClassName('stDataFrame')[0].innerHTML);
+        w.document.write('</body></html>');
+        w.document.close();
+        w.focus();
+        setTimeout(function(){w.print();}, 1000);
+        </script>""",
+        height=0,
+    )
 
 # --- CRUD ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
@@ -491,10 +542,9 @@ def main_menu():
                         if not ext.empty: 
                             st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                             
-                            # Botões de Impressão para Extrato
                             c_p1, c_p2 = st.columns(2)
-                            if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
-                            if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
+                            if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                            criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
                         else: st.info("Vazio.")
 
             elif st.session_state.get('hist_mode') == 'cancel':
@@ -532,26 +582,33 @@ def main_menu():
                 if not df_p.empty:
                     st.metric("Total do Dia (Estimado)", f"R$ {tot:.2f}")
                     st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                    c1, c2 = st.columns(2)
+                    if c1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                    criar_botao_pdf_termico(df_p, "RELATORIO VENDAS GERAL")
                 else: st.info("Nada vendido.")
             else:
                 res_turmas = get_relatorio_produtos_por_turma(d_str)
                 if res_turmas:
+                    # Para impressão térmica, concatenamos tudo em um único DF
+                    df_completo = pd.DataFrame()
                     for turma, df_t in res_turmas.items():
                         st.markdown(f"### {turma}")
                         st.dataframe(df_t, column_config={"Total": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                        df_t['TURMA'] = turma # Marca a turma
+                        df_completo = pd.concat([df_completo, df_t])
+                    
+                    c1, c2 = st.columns(2)
+                    if c1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                    criar_botao_pdf_termico(df_completo, "RELATORIO POR TURMA")
                 else: st.info("Nada vendido.")
-            
-            c_p1, c_p2 = st.columns(2)
-            if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
-            if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
         
         elif st.session_state.get('rel_mode') == 'alunos':
             df_a = get_relatorio_alunos_dia(d_str)
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                 c_p1, c_p2 = st.columns(2)
-                if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
-                if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
+                if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                criar_botao_pdf_termico(df_a, "RELATORIO ALUNOS")
             else: st.info("Nada vendido.")
 
         elif st.session_state.get('rel_mode') == 'recargas':
@@ -559,8 +616,8 @@ def main_menu():
             if not df_r.empty:
                 st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
                 c_p1, c_p2 = st.columns(2)
-                if c_p1.button("🖨️ IMPRIMIR LASER (A4)"): acionar_impressao("laser")
-                if c_p2.button("🧾 IMPRIMIR TÉRMICA (Bematech)"): acionar_impressao("termica")
+                if c_p1.button("🖨️ LASER/JATO (A4)"): acionar_impressao_js()
+                criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
             else: st.info("Nenhuma recarga.")
 
 # --- FUNÇÃO DE VENDA ---
