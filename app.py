@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import random
 import string
 import pytz
-import mercadopago  # <--- BIBLIOTECA DO MERCADO PAGO
+import mercadopago
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
@@ -65,10 +65,8 @@ def init_db():
     else:
         c.execute("UPDATE admins SET permissoes = ? WHERE email='admin'", (perms_str,))
 
-    # 2. Tabela Alunos (ATUALIZADA COM LIMITES)
+    # 2. Tabela Alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL)''')
-    
-    # Colunas extras de Login/Senha
     for col, tipo in [('telefone3', 'TEXT'), ('login', 'TEXT'), ('senha', 'TEXT')]:
         if not check_column_exists(c, 'alunos', col):
             try: c.execute(f"ALTER TABLE alunos ADD COLUMN {col} {tipo}")
@@ -76,7 +74,7 @@ def init_db():
             
     # --- NOVAS COLUNAS: LIMITE DIÁRIO ---
     if not check_column_exists(c, 'alunos', 'limite_ativo'):
-        try: c.execute("ALTER TABLE alunos ADD COLUMN limite_ativo INTEGER DEFAULT 0") # 0 = Desativado, 1 = Ativado
+        try: c.execute("ALTER TABLE alunos ADD COLUMN limite_ativo INTEGER DEFAULT 0")
         except: pass
     if not check_column_exists(c, 'alunos', 'limite_valor'):
         try: c.execute("ALTER TABLE alunos ADD COLUMN limite_valor REAL DEFAULT 0.0")
@@ -107,7 +105,6 @@ def init_db():
     
     conn.commit(); conn.close()
 
-# Garante que o DB existe ao iniciar
 init_db()
 
 # --- FUNÇÃO RESET ADMIN ---
@@ -152,7 +149,6 @@ def garantir_credenciais(aluno_id, nome_aluno):
         c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,))
         dados = c.fetchone()
         
-        # --- Lógica de Geração de Login ---
         if not dados or not dados[0]:
             primeiro_nome = nome_aluno.split()[0].lower()
             for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ã','a'),('õ','o'),('ç','c')]:
@@ -164,7 +160,6 @@ def garantir_credenciais(aluno_id, nome_aluno):
         else:
             login_novo = dados[0]
 
-        # --- Lógica de Geração de Senha ---
         if not dados or not dados[1]:
             senha_nova = gerar_senha_aleatoria()
         else:
@@ -193,7 +188,6 @@ def garantir_credenciais(aluno_id, nome_aluno):
 
 # --- FUNÇÕES AUXILIARES DE LIMITE ---
 def get_gasto_hoje_aluno(aluno_id):
-    """Retorna quanto o aluno gastou hoje"""
     hoje = agora_manaus().strftime("%d/%m/%Y")
     conn = sqlite3.connect(DB_FILE)
     try:
@@ -205,7 +199,6 @@ def get_gasto_hoje_aluno(aluno_id):
     finally: conn.close()
 
 def update_limite_aluno(aluno_id, ativo, valor):
-    """Atualiza as configurações de limite do aluno"""
     conn = sqlite3.connect(DB_FILE)
     try:
         c = conn.cursor()
@@ -614,11 +607,32 @@ def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.ex
 def update_alimento_db(id,n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alimentos SET nome=?,valor=?,tipo=? WHERE id=?',(n,v,t,id)); conn.commit(); conn.close()
 def delete_alimento_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('DELETE FROM alimentos WHERE id=?',(id,)); conn.commit(); conn.close()
 def get_all_alimentos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alimentos",conn); conn.close(); return df
+
+# --- FUNÇÃO ATUALIZADA: UPSERT COM UPDATE COMPLETO ---
 def upsert_aluno(n,s,t,tu,nas,em,t1,t2,t3,sl):
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT id FROM alunos WHERE nome=?",(n,)); d=c.fetchone(); ns=str(nas) if nas else None
-    if d: c.execute('UPDATE alunos SET serie=?,turma=?,turno=?,nascimento=?,email=?,telefone1=?,telefone2=?,telefone3=? WHERE nome=?',(s,t,tu,ns,em,t1,t2,t3,n))
-    else: c.execute('INSERT INTO alunos (nome,serie,turma,turno,nascimento,email,telefone1,telefone2,telefone3,saldo) VALUES (?,?,?,?,?,?,?,?,?,?)',(n,s,t,tu,ns,em,t1,t2,t3,sl))
-    conn.commit(); conn.close()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id FROM alunos WHERE nome=?", (n,))
+    d = c.fetchone()
+    ns = str(nas) if nas else None
+    
+    if d:
+        # ATUALIZA TUDO (Inclusive Saldo), menos o Nome
+        c.execute('''
+            UPDATE alunos 
+            SET serie=?, turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? 
+            WHERE nome=?
+        ''', (s, t, tu, ns, em, t1, t2, t3, sl, n))
+    else:
+        # INSERE NOVO
+        c.execute('''
+            INSERT INTO alunos (nome, serie, turma, turno, nascimento, email, telefone1, telefone2, telefone3, saldo) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (n, s, t, tu, ns, em, t1, t2, t3, sl))
+        
+    conn.commit()
+    conn.close()
+
 def update_aluno_manual(id,n,s,t,tu,ns,em,t1,t2,t3,sl): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alunos SET nome=?,serie=?,turma=?,turno=?,nascimento=?,email=?,telefone1=?,telefone2=?,telefone3=?,saldo=? WHERE id=?',(n,s,t,tu,ns,em,t1,t2,t3,sl,id)); conn.commit(); conn.close()
 def delete_aluno_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?",(id,)); conn.commit(); conn.close()
 def delete_turma_db(t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE turma=?",(t,)); ct=c.rowcount; conn.commit(); conn.close(); return ct
@@ -786,11 +800,11 @@ def menu_admin():
 
     menu=st.session_state.get('menu')
 
+    # --- MENU CADASTROS (AGORA COM 2 COLUNAS) ---
     if menu=='cadastro' and "CADASTRO" in perms:
-        st.markdown("---"); c1,c2,c3=st.columns(3)
+        st.markdown("---"); c1,c2=st.columns(2)
         if c1.button("📝 DADOS ALUNOS",use_container_width=True): st.session_state['sub']='user'
-        if c2.button("📧 ENVIAR ACESSOS",use_container_width=True): st.session_state['sub']='acesso_alunos'
-        if c3.button("🍎 ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
+        if c2.button("🍎 ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
         
         if st.session_state.get('sub')=='food':
             act=st.radio("Ação",["NOVO","ALTERAR","EXCLUIR"],horizontal=True); df=get_all_alimentos()
@@ -810,17 +824,47 @@ def menu_admin():
 
         if st.session_state.get('sub')=='user':
             act=st.radio("Ação",["IMPORTAR CSV","NOVO ALUNO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
+            
+            # --- IMPORTAR CSV MELHORADO ---
             if act=="IMPORTAR CSV":
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
                     try:
                         df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
-                        for c in df.select_dtypes(include=['object']): df[c]=df[c].astype(str).str.replace('1Â','1o',regex=False).str.replace('°','',regex=False)
+                        # Limpa nomes das colunas
+                        # df.columns = [c.strip() for c in df.columns]
+                        
                         n,a,b=0,0,st.progress(0)
-                        for i,r in df.iterrows():
-                            upsert_aluno(r.get('Aluno',''),'',r.get('Turma',''),'',None,r.get('E-mail',''),None,None,None,0.0); b.progress((i+1)/len(df))
-                        st.success(f"{n} novos, {a} atualizados.")
+                        
+                        for i, r in df.iterrows():
+                            # Mapeamento flexível de colunas
+                            nome = r.get('Aluno') or r.get('Nome') or ""
+                            turma = r.get('Turma') or ""
+                            serie = r.get('Serie') or r.get('Série') or ""
+                            turno = r.get('Turno') or ""
+                            email = r.get('Email') or r.get('E-mail') or ""
+                            tel1 = r.get('Telefone1') or r.get('Telefone') or r.get('Tel') or ""
+                            tel2 = r.get('Telefone2') or ""
+                            tel3 = r.get('Telefone3') or ""
+                            
+                            # Tratamento de Saldo
+                            saldo_raw = r.get('Saldo') or 0.0
+                            try:
+                                if isinstance(saldo_raw, str):
+                                    saldo = float(saldo_raw.replace(',', '.'))
+                                else:
+                                    saldo = float(saldo_raw)
+                            except: saldo = 0.0
+                            
+                            # Chama a função que insere ou atualiza TUDO
+                            if nome:
+                                upsert_aluno(str(nome), str(serie), str(turma), str(turno), None, str(email), str(tel1), str(tel2), str(tel3), saldo)
+                            
+                            b.progress((i+1)/len(df))
+                            
+                        st.success("Importação concluída! Dados atualizados.")
                     except Exception as e: st.error(f"Erro: {e}")
+                    
             elif act=="NOVO ALUNO":
                 with st.form("nal"):
                     c1,c2=st.columns([3,1]); nm=c1.text_input("Nome Completo"); nas=c2.date_input("Data Nascimento",value=None,min_value=date(1990,1,1),format="DD/MM/YYYY")
@@ -860,48 +904,52 @@ def menu_admin():
                     t=st.selectbox("Turma",sorted(df['turma'].dropna().unique()))
                     if st.button("🧨 APAGAR TURMA"): cnt=delete_turma_db(t); st.success(f"{cnt} excluídos."); st.rerun()
 
-        if st.session_state.get('sub')=='acesso_alunos':
-            st.subheader("🔑 Enviar Senhas para Alunos")
-            c1, c2, c3 = st.columns(3)
-            if c1.button("👤 POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
-            if c2.button("🏫 POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
-            if c3.button("📢 PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
-            df_alunos = get_all_alunos()
-            if st.session_state.get('acc_mode') == 'aluno':
+    # --- MENU ENVIAR ACESSOS (MOVIDO PARA CÁ) ---
+    if menu == 'enviar_acessos' and "ENVIAR ACESSOS" in perms:
+        st.markdown("---")
+        st.subheader("🔑 Enviar Senhas para Alunos")
+        c1, c2, c3 = st.columns(3)
+        if c1.button("👤 POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
+        if c2.button("🏫 POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
+        if c3.button("📢 PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
+        
+        df_alunos = get_all_alunos()
+        
+        if st.session_state.get('acc_mode') == 'aluno':
+            if not df_alunos.empty:
+                df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
+                sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
+                email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
+                if st.button("GERAR E ENVIAR"):
+                    l, s = garantir_credenciais(id_sel, nome_sel)
+                    if l and s:
+                        if email_sel:
+                            enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
+                        else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
+            else: st.warning("Sem alunos.")
+        elif st.session_state.get('acc_mode') == 'turma':
+            if not df_alunos.empty:
+                turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
+                if st.button(f"DISPARAR PARA {t_sel}"):
+                    alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
+                    for i, row in alunos_turma.iterrows():
+                        l, s = garantir_credenciais(row['id'], row['nome'])
+                        if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                        bar.progress((i + 1) / len(alunos_turma))
+                    st.success(f"Processo finalizado! {count} e-mails enviados.")
+            else: st.warning("Sem alunos.")
+        elif st.session_state.get('acc_mode') == 'todos':
+            st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
+            if st.button("CONFIRMAR ENVIO EM MASSA"):
                 if not df_alunos.empty:
-                    df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
-                    sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
-                    id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
-                    nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
-                    email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
-                    if st.button("GERAR E ENVIAR"):
-                        l, s = garantir_credenciais(id_sel, nome_sel)
-                        if l and s:
-                            if email_sel:
-                                enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
-                            else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
-                else: st.warning("Sem alunos.")
-            elif st.session_state.get('acc_mode') == 'turma':
-                if not df_alunos.empty:
-                    turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
-                    if st.button(f"DISPARAR PARA {t_sel}"):
-                        alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
-                        for i, row in alunos_turma.iterrows():
-                            l, s = garantir_credenciais(row['id'], row['nome'])
-                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                            bar.progress((i + 1) / len(alunos_turma))
-                        st.success(f"Processo finalizado! {count} e-mails enviados.")
-                else: st.warning("Sem alunos.")
-            elif st.session_state.get('acc_mode') == 'todos':
-                st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
-                if st.button("CONFIRMAR ENVIO EM MASSA"):
-                    if not df_alunos.empty:
-                        count = 0; bar = st.progress(0)
-                        for i, row in df_alunos.iterrows():
-                            l, s = garantir_credenciais(row['id'], row['nome'])
-                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                            bar.progress((i + 1) / len(df_alunos))
-                        st.success(f"Envio concluído! {count} mensagens enviadas.")
+                    count = 0; bar = st.progress(0)
+                    for i, row in df_alunos.iterrows():
+                        l, s = garantir_credenciais(row['id'], row['nome'])
+                        if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                        bar.progress((i + 1) / len(df_alunos))
+                    st.success(f"Envio concluído! {count} mensagens enviadas.")
 
     if menu == 'recarga' and "RECARGA" in perms:
         st.markdown("---"); st.subheader("💰 Recarga")
