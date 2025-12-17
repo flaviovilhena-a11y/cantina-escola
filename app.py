@@ -342,36 +342,53 @@ class PDFA4(FPDF):
                     self.set_font('Arial','',9); self.cell(100,7,p,1,0,'L'); self.cell(30,7,q,1,0,'C'); self.cell(60,7,tot,1,1,'R')
             self.ln(5)
 
-# --- PDF TERMICO (Modificado para lista vertical) ---
+# --- PDF TERMICO (CORRIGIDO PARA BOBINA CONTÍNUA) ---
 class PDFTermico(FPDF):
     def __init__(self, titulo, dados, modo="simples"):
-        linhas = 0
+        # 1. CÁLCULO DE ALTURA MAIS ROBUSTO
+        linhas_totais = 0
+        
+        # Cabeçalho fixo ocupa umas 10 linhas equivalentes
+        linhas_totais += 12 
+        
         if modo == "turmas":
-            for df in dados.values(): linhas += len(df) + 4 
+            for df in dados.values(): 
+                linhas_totais += len(df) + 6
         else: 
-            # Estima altura baseada na quantidade de QUEBRAS DE LINHA nos produtos
             for i, r in dados.iterrows():
                 p_str = str(r.get('Produtos/Histórico', ''))
-                linhas += p_str.count('\n') + 2 # +2 margem
-            
-        altura_estimada = 40 + (linhas * 5)
+                # Conta quebras de linha (\n) + 1 para a linha base + 1 margem
+                linhas_totais += p_str.count('\n') + 2 
+        
+        # Converte linhas em mm (aprox 5mm por linha)
+        altura_estimada = linhas_totais * 5.5
+        
+        # Define tamanho da página
         super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
-        self.titulo = titulo; self.dados = dados; self.modo = modo; self.set_margins(2, 2, 2); self.add_page()
+        
+        # 2. DESATIVA QUEBRA DE PÁGINA AUTOMÁTICA
+        self.set_auto_page_break(False)
+        
+        self.titulo = titulo; self.dados = dados; self.modo = modo
+        self.set_margins(2, 2, 2)
+        self.add_page()
+        
     def header(self):
         self.set_font('Courier', 'B', 10); self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
         self.set_font('Courier', '', 8); self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
         self.cell(0, 4, f'{agora_manaus().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
         self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
         self.set_font('Courier', 'B', 9); self.multi_cell(0, 4, self.titulo.upper(), 0, 'C'); self.ln(2)
+    
     def gerar_relatorio(self):
         if self.modo == "turmas": self._gerar_por_turma()
         else: self._gerar_simples()
     
     def _gerar_simples(self):
         self.set_font('Courier', 'B', 8)
-        # Cabeçalho manual
-        self.cell(22, 4, "DATA", 0, 0, 'L')
-        self.cell(34, 4, "HISTORICO", 0, 0, 'L')
+        # Cabeçalho da tabela - Larguras ajustadas para 76mm útil
+        self.cell(20, 4, "DATA", 0, 0, 'L')
+        self.cell(36, 4, "HISTORICO", 0, 0, 'L')
         self.cell(20, 4, "VALOR", 0, 1, 'R')
         self.cell(0, 0, border="T", ln=1)
         self.ln(1)
@@ -379,7 +396,7 @@ class PDFTermico(FPDF):
         self.set_font('Courier', '', 8)
         
         for i, r in self.dados.iterrows():
-            data_val = str(r['Data'])[:11] # Corta ano se precisar
+            data_val = str(r['Data'])[:5] # Apenas DD/MM pra economizar espaço
             val_raw = r['Valor']
             val_str = f"{val_raw:.2f}" if isinstance(val_raw, (float, int)) else str(val_raw)
             
@@ -388,17 +405,23 @@ class PDFTermico(FPDF):
             
             # Primeira linha: Data | Primeiro Item | Valor
             item_1 = prods[0] if prods else ""
-            self.cell(22, 4, data_val, 0, 0, 'L')
-            self.cell(34, 4, item_1[:18], 0, 0, 'L')
+            self.cell(20, 4, data_val, 0, 0, 'L')
+            self.cell(36, 4, item_1[:20], 0, 0, 'L') # Corta se for mto grande
             self.cell(20, 4, val_str, 0, 1, 'R')
             
             # Linhas seguintes (só o item, indentado)
             if len(prods) > 1:
                 for item_extra in prods[1:]:
-                    self.cell(22, 4, "", 0, 0, 'L') # Espaço da data
-                    self.cell(54, 4, item_extra[:30], 0, 1, 'L')
+                    self.cell(20, 4, "", 0, 0, 'L') # Espaço da data vazio
+                    self.cell(56, 4, item_extra[:30], 0, 1, 'L') # Usa espaço extra
             
             self.ln(1) # Espaço entre transações
+        
+        # Rodapé final
+        self.ln(5)
+        self.cell(0,0, border="T", ln=1)
+        self.ln(2)
+        self.cell(0, 4, "Fim do Relatorio", 0, 1, 'C')
 
     def _gerar_por_turma(self):
         for t, df in self.dados.items():
