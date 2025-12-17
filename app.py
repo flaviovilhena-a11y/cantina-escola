@@ -608,32 +608,41 @@ def update_alimento_db(id,n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor()
 def delete_alimento_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('DELETE FROM alimentos WHERE id=?',(id,)); conn.commit(); conn.close()
 def get_all_alimentos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alimentos",conn); conn.close(); return df
 
-# --- FUNÇÃO ATUALIZADA: UPSERT COM UPDATE COMPLETO ---
+# --- FUNÇÃO ATUALIZADA: UPSERT COM UNIFICAÇÃO DE TURMA ---
 def upsert_aluno(n,s,t,tu,nas,em,t1,t2,t3,sl):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     c.execute("SELECT id FROM alunos WHERE nome=?", (n,))
     d = c.fetchone()
-    ns = str(nas) if nas else None
+    
+    # UNIFICAÇÃO: Se vier Série e Turma, junta. Se só vier Turma, usa ela.
+    turma_final = t
+    if s:
+        if s not in t: # Evita "1 ANO 1 ANO A"
+            turma_final = f"{s} {t}".strip()
     
     if d:
-        # ATUALIZA TUDO (Inclusive Saldo), menos o Nome
         c.execute('''
             UPDATE alunos 
-            SET serie=?, turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? 
+            SET turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? 
             WHERE nome=?
-        ''', (s, t, tu, ns, em, t1, t2, t3, sl, n))
+        ''', (turma_final, tu, nas, em, t1, t2, t3, sl, n))
     else:
-        # INSERE NOVO
         c.execute('''
             INSERT INTO alunos (nome, serie, turma, turno, nascimento, email, telefone1, telefone2, telefone3, saldo) 
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (n, s, t, tu, ns, em, t1, t2, t3, sl))
+        ''', (n, "", turma_final, tu, nas, em, t1, t2, t3, sl))
         
     conn.commit()
     conn.close()
 
-def update_aluno_manual(id,n,s,t,tu,ns,em,t1,t2,t3,sl): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alunos SET nome=?,serie=?,turma=?,turno=?,nascimento=?,email=?,telefone1=?,telefone2=?,telefone3=?,saldo=? WHERE id=?',(n,s,t,tu,ns,em,t1,t2,t3,sl,id)); conn.commit(); conn.close()
+def update_aluno_manual(id,n,t,tu,nas,em,t1,t2,t3,sl): 
+    conn=sqlite3.connect(DB_FILE)
+    c=conn.cursor()
+    c.execute('UPDATE alunos SET nome=?, turma=?, turno=?, nascimento=?, email=?, telefone1=?, telefone2=?, telefone3=?, saldo=? WHERE id=?',(n,t,tu,nas,em,t1,t2,t3,sl,id))
+    conn.commit()
+    conn.close()
+
 def delete_aluno_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?",(id,)); conn.commit(); conn.close()
 def delete_turma_db(t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE turma=?",(t,)); ct=c.rowcount; conn.commit(); conn.close(); return ct
 
@@ -694,9 +703,12 @@ def realizar_venda_form(aid, origin=None):
 def limpar_texto(texto):
     if not isinstance(texto, str): return str(texto) if texto else ""
     t = texto.upper()
+    # Correção manual de caracteres de encoding CP850
+    t = t.replace('Æ', 'Ã').replace('¾', 'Z').replace('µ', 'A')
     t = t.replace('º', 'o').replace('°', 'o').replace('ª', 'a')
-    t = t.replace('1Ø', '1o').replace('1ø', '1o') # Corrige especificamente o erro de encoding
-    t = t.replace('Ø', 'o').replace('ø', 'o') # Corrige o caractere solto
+    t = t.replace('1Ø', '1o').replace('1ø', '1o')
+    t = t.replace('Ø', 'o').replace('ø', 'o')
+    t = t.replace('├Ç', 'Ã').replace('├Ü', 'A').replace('ÔÇí', 'C') # Correção extra para UTF-8 corrompido
     return t.strip()
 
 # --- MENUS DE INTERFACE ---
@@ -743,7 +755,8 @@ def menu_aluno():
         with tab3: 
             st.subheader("Dados Cadastrais")
             st.text_input("Nome", aluno['nome'], disabled=True)
-            st.text_input("Turma", f"{aluno['serie']} - {aluno['turma']}", disabled=True)
+            # Mostra a Turma Unificada
+            st.text_input("Turma", aluno['turma'], disabled=True)
             st.text_input("Matrícula (Login)", aluno['login'], disabled=True)
             
             st.markdown("---")
@@ -837,7 +850,7 @@ def menu_admin():
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
                     try:
-                        # LEITURA ROBUSTA: Tenta CP850 (Legacy) primeiro, depois outros
+                        # Tenta ler com encoding CP850 (Legacy DOS/Windows) e SEPARADOR ';'
                         try:
                             df=pd.read_csv(u,sep=';',engine='python',encoding='cp850')
                         except:
@@ -859,12 +872,13 @@ def menu_admin():
                         n_count, a_count, b = 0, 0, st.progress(0)
                         
                         for i, r in df.iterrows():
+                            # Limpeza de caracteres estranhos (Simão e 1o)
                             nome = limpar_texto(get_val(r, ['ALUNO', 'NOME', 'NOME COMPLETO']))
+                            
                             turma_full = limpar_texto(get_val(r, ['TURMA', 'CLASSE']))
                             serie = ""
                             turma = ""
                             
-                            # Separa Serie e Turma
                             if turma_full:
                                 parts = turma_full.rsplit(' ', 1) 
                                 if len(parts) == 2 and len(parts[1]) <= 2:
@@ -892,15 +906,14 @@ def menu_admin():
                             nasc_fmt = None
                             if nasc_raw:
                                 try:
-                                    # Pega só a parte da data (remove horas se houver)
+                                    # Pega só a parte da data
                                     data_limpa = str(nasc_raw).split(" ")[0]
-                                    # Tenta converter do formato brasileiro
+                                    # Tenta converter
                                     dt_obj = datetime.strptime(data_limpa, "%d/%m/%Y")
-                                    # Converte para o formato do banco (ISO)
+                                    # Formato correto para o banco (YYYY-MM-DD)
                                     nasc_fmt = dt_obj.strftime("%Y-%m-%d")
                                 except: 
-                                    # Se falhar, tenta salvar como string mesmo
-                                    nasc_fmt = str(nasc_raw)
+                                    nasc_fmt = str(nasc_raw) # Salva como veio se falhar
 
                             saldo = 0.0
                             
@@ -915,29 +928,36 @@ def menu_admin():
             elif act=="NOVO ALUNO":
                 with st.form("nal"):
                     c1,c2=st.columns([3,1]); nm=c1.text_input("Nome Completo"); nas=c2.date_input("Data Nascimento",value=None,min_value=date(1990,1,1),format="DD/MM/YYYY")
-                    c3,c4,c5=st.columns(3); ser=c3.text_input("Série"); tr=c4.text_input("Turma"); tur=c5.selectbox("Turno",["Matutino","Vespertino","Integral"])
+                    # REMOVIDO CAMPO SÉRIE - AGORA SÓ TURMA
+                    c3,c4=st.columns(2); tr=c3.text_input("Turma (Ex: 1º Ano A)"); tur=c4.selectbox("Turno",["Matutino","Vespertino","Integral"])
                     em=st.text_input("E-mail Responsável")
                     c6,c7,c8=st.columns(3); t1=c6.text_input("Telefone 1"); t2=c7.text_input("Telefone 2"); t3=c8.text_input("Telefone 3")
                     sl=st.number_input("Saldo Inicial (R$)",0.0)
                     if st.form_submit_button("CONFIRMAR CADASTRO"): 
                         try:
-                            upsert_aluno(nm,ser,tr,tur,nas,em,t1,t2,t3,sl)
+                            # Passa "" no lugar da série
+                            upsert_aluno(nm,"",tr,tur,nas,em,t1,t2,t3,sl)
                             st.success("✅ Aluno cadastrado com sucesso!"); time.sleep(1.5); st.rerun()
                         except Exception as e: st.error(f"❌ Erro ao cadastrar: {e}")
             elif act=="ATUALIZAR":
                 df=get_all_alunos()
                 if not df.empty:
                     df=df.sort_values('nome'); df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Aluno",df['l'].unique()); id=int(s.split(' - ')[0]); d=df[df['id']==id].iloc[0]
+                    
+                    # DATA CORRIGIDA PARA O CAMPO DO FORMULARIO
                     try: dna=datetime.strptime(d['nascimento'],'%Y-%m-%d').date()
                     except: dna=None
+                    
                     with st.form("ual"):
                         c1,c2=st.columns([3,1]); nm=c1.text_input("Nome",d['nome']); nas=c2.date_input("Nascimento",dna,format="DD/MM/YYYY")
-                        c3,c4,c5=st.columns(3); ser=c3.text_input("Série",d['serie'] or ""); tr=c4.text_input("Turma",d['turma']); 
-                        ts=["Matutino","Vespertino","Integral"]; idx=ts.index(d['turno']) if d['turno'] in ts else 0; tur=c5.selectbox("Turno",ts,index=idx)
+                        # SÉRIE REMOVIDA - SÓ TURMA
+                        c3,c4=st.columns(2); tr=c3.text_input("Turma",d['turma']); 
+                        ts=["Matutino","Vespertino","Integral"]; idx=ts.index(d['turno']) if d['turno'] in ts else 0; tur=c4.selectbox("Turno",ts,index=idx)
                         em=st.text_input("E-mail",d['email'] or ""); c6,c7,c8=st.columns(3); t1=c6.text_input("Tel 1",d['telefone1'] or ""); t2=c7.text_input("Tel 2",d['telefone2'] or ""); t3=c8.text_input("Tel 3",d['telefone3'] or ""); sl=st.number_input("Saldo",value=float(d['saldo']))
                         if st.form_submit_button("CONFIRMAR ALTERAÇÕES"):
                             try:
-                                update_aluno_manual(id,nm,ser,tr,tur,str(nas) if nas else None,em,t1,t2,t3,sl)
+                                # Update manual também ignora série
+                                update_aluno_manual(id,nm,tr,tur,str(nas) if nas else None,em,t1,t2,t3,sl)
                                 st.success("✅ Dados atualizados com sucesso!"); time.sleep(1.5); st.rerun()
                             except Exception as e: st.error(f"❌ Erro ao atualizar: {e}")
             elif act=="EXCLUIR ALUNO":
