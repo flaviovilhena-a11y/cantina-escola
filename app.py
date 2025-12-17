@@ -515,4 +515,375 @@ def menu_admin():
     up=st.sidebar.file_uploader("RESTORE",type=["db"])
     if up and st.sidebar.button("CONFIRMAR IMPORTAÇÃO"):
         try: open(DB_FILE,"wb").write(up.getbuffer()); st.sidebar.success("Reiniciando..."); time.sleep(2); st.rerun()
-        except Exception as e: st.sidebar.
+        except Exception as e: st.sidebar.error(f"Erro: {e}")
+    st.sidebar.markdown("---")
+    if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
+
+    # Menu Principal Admin
+    c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
+    if c1.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
+    if c2.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
+    if c3.button("SALDO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
+    if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
+    if c5.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
+    if c6.button("🔑 ACESSO & ADMIN", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
+
+    menu=st.session_state.get('menu')
+
+    # --- CADASTRO ---
+    if menu=='cadastro':
+        st.markdown("---"); c1,c2=st.columns(2)
+        if c1.button("USUÁRIO",use_container_width=True): st.session_state['sub']='user'
+        if c2.button("ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
+        
+        if st.session_state.get('sub')=='food':
+            act=st.radio("Ação",["NOVO","ALTERAR","EXCLUIR"],horizontal=True); df=get_all_alimentos()
+            if act=="NOVO":
+                with st.form("nf"): 
+                    n=st.text_input("Nome"); v=st.number_input("Valor",0.0,step=0.5); t=st.selectbox("Tipo",["ALIMENTO","BEBIDA"])
+                    if st.form_submit_button("CADASTRAR"): add_alimento_db(n,v,t); st.success("Ok!"); st.rerun()
+                if not df.empty: st.dataframe(df[['nome','valor','tipo']],hide_index=True)
+            elif act=="ALTERAR" and not df.empty:
+                df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Item",df['l'].unique()); id=int(s.split(' - ')[0]); d=df[df['id']==id].iloc[0]
+                with st.form("ef"):
+                    n=st.text_input("Nome",d['nome']); v=st.number_input("Valor",value=float(d['valor'])); t=st.selectbox("Tipo",["ALIMENTO","BEBIDA"],index=["ALIMENTO","BEBIDA"].index(d['tipo'] if d['tipo'] in ["ALIMENTO","BEBIDA"] else "ALIMENTO"))
+                    if st.form_submit_button("SALVAR"): update_alimento_db(id,n,v,t); st.success("Ok!"); st.rerun()
+            elif act=="EXCLUIR" and not df.empty:
+                df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Excluir",df['l'].unique()); id=int(s.split(' - ')[0])
+                if st.button("CONFIRMAR"): delete_alimento_db(id); st.success("Apagado!"); st.rerun()
+
+        if st.session_state.get('sub')=='user':
+            act=st.radio("Ação",["IMPORTAR CSV","NOVO ALUNO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
+            if act=="IMPORTAR CSV":
+                u=st.file_uploader("CSV",type=['csv'])
+                if u and st.button("ENVIAR"):
+                    try:
+                        df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
+                        for c in df.select_dtypes(include=['object']): df[c]=df[c].astype(str).str.replace('1Â','1o',regex=False).str.replace('°','',regex=False)
+                        n,a,b=0,0,st.progress(0)
+                        for i,r in df.iterrows():
+                            upsert_aluno(r.get('Aluno',''),'',r.get('Turma',''),'',None,r.get('E-mail',''),None,None,None,0.0); b.progress((i+1)/len(df))
+                        st.success(f"{n} novos, {a} atualizados.")
+                    except Exception as e: st.error(f"Erro: {e}")
+            elif act=="NOVO ALUNO":
+                st.write("📝 **Ficha de Cadastro Completa**")
+                with st.form("nal"):
+                    c1,c2=st.columns([3,1]); nm=c1.text_input("Nome Completo"); nas=c2.date_input("Data Nascimento",value=None,min_value=date(1990,1,1),format="DD/MM/YYYY")
+                    c3,c4,c5=st.columns(3); ser=c3.text_input("Série"); tr=c4.text_input("Turma"); tur=c5.selectbox("Turno",["Matutino","Vespertino","Integral"])
+                    em=st.text_input("E-mail Responsável")
+                    c6,c7,c8=st.columns(3); t1=c6.text_input("Telefone 1"); t2=c7.text_input("Telefone 2"); t3=c8.text_input("Telefone 3")
+                    sl=st.number_input("Saldo Inicial (R$)",0.0)
+                    if st.form_submit_button("CONFIRMAR CADASTRO"): 
+                        try:
+                            upsert_aluno(nm,ser,tr,tur,nas,em,t1,t2,t3,sl)
+                            st.success("✅ Aluno cadastrado com sucesso!"); time.sleep(1.5); st.rerun()
+                        except Exception as e: st.error(f"❌ Erro ao cadastrar: {e}")
+            elif act=="ATUALIZAR":
+                df=get_all_alunos()
+                if not df.empty:
+                    df=df.sort_values('nome'); df['l']=df['id'].astype(str)+" - "+df['nome']; s=st.selectbox("Aluno",df['l'].unique()); id=int(s.split(' - ')[0]); d=df[df['id']==id].iloc[0]
+                    try: dna=datetime.strptime(d['nascimento'],'%Y-%m-%d').date()
+                    except: dna=None
+                    st.write("✏️ **Editar Dados**")
+                    with st.form("ual"):
+                        c1,c2=st.columns([3,1]); nm=c1.text_input("Nome",d['nome']); nas=c2.date_input("Nascimento",dna,format="DD/MM/YYYY")
+                        c3,c4,c5=st.columns(3); ser=c3.text_input("Série",d['serie'] or ""); tr=c4.text_input("Turma",d['turma']); 
+                        ts=["Matutino","Vespertino","Integral"]; idx=ts.index(d['turno']) if d['turno'] in ts else 0; tur=c5.selectbox("Turno",ts,index=idx)
+                        em=st.text_input("E-mail",d['email'] or ""); c6,c7,c8=st.columns(3); t1=c6.text_input("Tel 1",d['telefone1'] or ""); t2=c7.text_input("Tel 2",d['telefone2'] or ""); t3=c8.text_input("Tel 3",d['telefone3'] or ""); sl=st.number_input("Saldo",value=float(d['saldo']))
+                        if st.form_submit_button("CONFIRMAR ALTERAÇÕES"):
+                            try:
+                                update_aluno_manual(id,nm,ser,tr,tur,str(nas) if nas else None,em,t1,t2,t3,sl)
+                                st.success("✅ Dados atualizados com sucesso!"); time.sleep(1.5); st.rerun()
+                            except Exception as e: st.error(f"❌ Erro ao atualizar: {e}")
+            elif act=="EXCLUIR ALUNO":
+                df=get_all_alunos()
+                if not df.empty:
+                    df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Excluir:",df['l'].unique()); id=int(df[df['l']==s].iloc[0]['id'])
+                    if st.button("❌ CONFIRMAR EXCLUSÃO"): delete_aluno_db(id); st.success("Excluído!"); st.rerun()
+            elif act=="EXCLUIR TURMA":
+                df=get_all_alunos()
+                if not df.empty:
+                    t=st.selectbox("Turma",sorted(df['turma'].dropna().unique()))
+                    if st.button("🧨 APAGAR TURMA"): cnt=delete_turma_db(t); st.success(f"{cnt} excluídos."); st.rerun()
+
+    # --- RECARGA ---
+    if menu == 'recarga':
+        st.markdown("---"); st.subheader("💰 Recarga")
+        c1,c2=st.columns(2)
+        if c1.button("📝 RECEBIMENTO MANUAL",use_container_width=True): st.session_state['rec_mode']='manual'; st.session_state['pix_data']=None
+        if c2.button("💠 PIX (QR CODE)",use_container_width=True): st.session_state['rec_mode']='pix'; st.session_state['pix_data']=None
+
+        df=get_all_alunos()
+        if not df.empty:
+            df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Aluno",df['l'].unique()); id_a=int(df[df['l']==s].iloc[0]['id'])
+            
+            if st.session_state.get('rec_mode')=='manual':
+                st.info("Recarga Manual")
+                with st.form("rman"):
+                    v=st.number_input("Valor R$",0.0,step=5.0); m=st.selectbox("Forma",["DINHEIRO", "PIX (MANUAL)", "DÉBITO", "CRÉDITO"])
+                    if st.form_submit_button("CONFIRMAR"):
+                        registrar_recarga(id_a,v,m)
+                        disparar_alerta(id_a, "Recarga", v, f"Forma: {m}")
+                        st.success("Sucesso!"); st.rerun()
+            
+            elif st.session_state.get('rec_mode')=='pix':
+                st.info("Gerar QR Code Estático")
+                v=st.number_input("Valor Pix",0.0,step=5.0)
+                if v>0:
+                    pix = PixPayload(CHAVE_PIX_ESCOLA, NOME_BENEFICIARIO, CIDADE_BENEFICIARIO, v)
+                    payload = pix.gerar_payload()
+                    st.markdown("---")
+                    c_qr, c_txt = st.columns([1, 2])
+                    with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
+                    with c_txt: st.code(payload); st.warning("Confira o comprovante.")
+                    if st.button("✅ CONFIRMAR PIX"):
+                        registrar_recarga(id_a, v, "PIX (QR)")
+                        disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code")
+                        st.success("Creditado!"); st.rerun()
+        else: st.warning("Sem alunos.")
+
+    # --- COMPRAR ---
+    if menu == 'comprar':
+        st.markdown("---"); st.subheader("🛒 Venda")
+        if not st.session_state.get('modo'):
+            c1,c2=st.columns(2)
+            if c1.button("🔍 ALUNO",use_container_width=True): st.session_state['modo']='aluno'
+            if c2.button("🏫 TURMA",use_container_width=True): st.session_state.update(modo='turma', res_tur=False)
+        
+        if st.session_state.get('modo')=='aluno':
+            df=get_all_alunos()
+            if not df.empty:
+                df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Aluno",df['l'].unique()); idx=int(df[df['l']==s].iloc[0]['id'])
+                realizar_venda_form(idx, origin='aluno')
+            else: st.warning("Sem alunos.")
+        
+        elif st.session_state.get('modo')=='turma':
+            if not st.session_state.get('t_sel'):
+                if st.button("⬅️ Voltar"): st.session_state['modo']=None; st.rerun()
+                df=get_all_alunos()
+                if not df.empty:
+                    t=st.selectbox("Turma",sorted(df['turma'].dropna().unique()))
+                    if st.button("ABRIR"): st.session_state.update(t_sel=t, res_tur=False); st.rerun()
+            else:
+                tur=st.session_state['t_sel']
+                if st.session_state.get('res_tur'):
+                    st.markdown(f"### Resumo: {tur}"); res=get_vendas_hoje_turma(tur)
+                    if not res.empty: st.dataframe(res,hide_index=True,use_container_width=True); st.markdown(f"**Total: R$ {res['valor_total'].sum():.2f}**")
+                    c1,c2=st.columns(2)
+                    if c1.button("✅ FECHAR"): st.session_state.update(t_sel=None, aid_venda=None, res_tur=False, modo=None); st.rerun()
+                    if c2.button("⬅️ Voltar"): st.session_state['res_tur']=False; st.rerun()
+                else:
+                    c1,c2=st.columns([3,1]); c1.markdown(f"### {tur}"); 
+                    if c2.button("🛑 ENCERRAR TURMA", type="primary"): st.session_state['res_tur']=True; st.rerun()
+                    if not st.session_state.get('aid_venda'):
+                        df=get_alunos_por_turma(tur); h1,h2,h3=st.columns([3,1,1]); h1.write("Nome"); h2.write("Saldo"); h3.write("Ação")
+                        for i,r in df.iterrows():
+                            c1,c2,c3=st.columns([3,1,1]); c1.write(r['nome']); c2.markdown(f"<span style='color:{'green' if r['saldo']>=0 else 'red'}'>{r['saldo']:.2f}</span>",unsafe_allow_html=True)
+                            if c3.button("VENDER",key=r['id']): st.session_state['aid_venda']=r['id']; st.rerun()
+                            st.markdown("<hr style='margin:5px 0'>",unsafe_allow_html=True)
+                        if st.button("⬅️ Voltar"): st.session_state['t_sel']=None; st.rerun()
+                    else:
+                        realizar_venda_form(st.session_state['aid_venda'], origin='turma')
+
+    # --- HISTÓRICO ---
+    if menu == 'hist':
+        st.markdown("---"); st.subheader("📜 Extrato e Histórico")
+        c1, c2 = st.columns(2)
+        if c1.button("📜 EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
+        if c2.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state['hist_mode'] = 'cancel'; st.session_state['hist_id'] = None
+
+        df = get_all_alunos()
+        if not df.empty:
+            df = df.sort_values(by='nome'); df['lbl'] = df['nome'] + " | " + df['turma'].astype(str)
+            
+            if st.session_state.get('hist_mode') == 'view':
+                if not st.session_state.get('hist_id'):
+                    sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
+                    if st.button("ABRIR EXTRATO"): st.session_state['hist_id'] = int(df[df['lbl'] == sel].iloc[0]['id']); st.rerun()
+                else:
+                    if st.button("⬅️ Trocar Aluno"): st.session_state['hist_id'] = None; st.rerun()
+                    conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
+                    st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
+                    filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
+                    if st.button("EXIBIR"):
+                        ext=get_extrato_aluno(al['id'], filt)
+                        if not ext.empty: 
+                            st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                            
+                            c_p1, c_p2 = st.columns(2)
+                            criar_botao_pdf_a4(ext, f"EXTRATO: {al['nome']}")
+                            criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
+                        else: st.info("Vazio.")
+
+            elif st.session_state.get('hist_mode') == 'cancel':
+                st.info("⚠️ Cancelamento de vendas")
+                sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique()); id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
+                filt_canc = st.selectbox("Período:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
+                vendas_lista = get_vendas_cancelar(id_aluno, filt_canc)
+                
+                if not vendas_lista.empty:
+                    vendas_lista['desc'] = vendas_lista.apply(lambda x: f"ID: {x['id']} | {x['data_hora']} | R$ {x['valor_total']:.2f} | {x['itens']}", axis=1)
+                    venda_sel = st.selectbox("Selecione a compra:", vendas_lista['desc'])
+                    if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
+                        id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", ""))
+                        valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
+                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
+                        disparar_alerta(id_aluno, "Estorno/Cancelamento", valor_estorno, "Venda cancelada pelo operador")
+                        st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
+                else: st.warning("Nenhuma venda encontrada.")
+        else: st.warning("Sem alunos.")
+
+    # --- RELATÓRIOS ---
+    if menu == 'relatorios':
+        st.markdown("---"); st.subheader("📊 Relatórios")
+        data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
+        st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
+        
+        turno_sel = st.radio("Turno:", ["DIA INTEIRO", "MATUTINO", "VESPERTINO"], horizontal=True)
+        st.markdown("---")
+
+        c1, c2, c3 = st.columns(3)
+        if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
+        if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
+        if c3.button("💰 RECARGAS", use_container_width=True): st.session_state['rel_mode'] = 'recargas'
+
+        if st.session_state.get('rel_mode') == 'produtos':
+            vis_mode = st.radio("Modo de Visualização:", ["VISÃO GERAL (TOTAL)", "DETALHADO POR TURMA"], horizontal=True)
+            if vis_mode == "VISÃO GERAL (TOTAL)":
+                df_p, tot = get_relatorio_produtos(d_str, turno_sel)
+                if not df_p.empty:
+                    st.metric(f"Total {turno_sel} (Estimado)", f"R$ {tot:.2f}")
+                    st.dataframe(df_p, column_config={"Valor Total (R$)": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                    c1, c2 = st.columns(2)
+                    criar_botao_pdf_a4(df_p, f"VENDAS GERAL ({turno_sel})")
+                    criar_botao_pdf_termico(df_p, f"VENDAS GERAL ({turno_sel})")
+                else: st.info("Nada vendido neste turno.")
+            else:
+                res_turmas = get_relatorio_produtos_por_turma(d_str, turno_sel)
+                if res_turmas:
+                    df_completo = pd.DataFrame()
+                    for turma, df_t in res_turmas.items():
+                        st.markdown(f"### {turma}")
+                        st.dataframe(df_t, column_config={"Total": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                        df_t['TURMA'] = turma
+                        df_completo = pd.concat([df_completo, df_t])
+                    
+                    c1, c2 = st.columns(2)
+                    criar_botao_pdf_a4(res_turmas, f"POR TURMA ({turno_sel})", modo="turmas")
+                    criar_botao_pdf_termico(res_turmas, f"POR TURMA ({turno_sel})", modo="turmas")
+                else: st.info("Nada vendido neste turno.")
+        
+        elif st.session_state.get('rel_mode') == 'alunos':
+            df_a = get_relatorio_alunos_dia(d_str)
+            if not df_a.empty:
+                st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                c_p1, c_p2 = st.columns(2)
+                criar_botao_pdf_a4(df_a, "RELATORIO ALUNOS")
+                criar_botao_pdf_termico(df_a, "RELATORIO ALUNOS")
+            else: st.info("Nada vendido.")
+
+        elif st.session_state.get('rel_mode') == 'recargas':
+            df_r = get_relatorio_recargas_dia(d_str)
+            if not df_r.empty:
+                st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                c_p1, c_p2 = st.columns(2)
+                criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
+                criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
+            else: st.info("Nenhuma recarga.")
+
+    # --- NOVO MENU: ACESSO & ADMIN ---
+    if menu == 'acesso':
+        st.markdown("---"); st.subheader("🔑 Gestão de Acessos")
+        
+        tab_alunos, tab_admins = st.tabs(["🎓 Alunos", "👔 Administradores"])
+        
+        with tab_alunos:
+            # Opções de envio
+            c1, c2, c3 = st.columns(3)
+            if c1.button("👤 ENVIAR POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
+            if c2.button("🏫 ENVIAR POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
+            if c3.button("📢 ENVIAR PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
+            
+            df_alunos = get_all_alunos()
+            
+            if st.session_state.get('acc_mode') == 'aluno':
+                if not df_alunos.empty:
+                    df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
+                    sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                    id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                    nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
+                    email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
+                    
+                    if st.button("GERAR E ENVIAR"):
+                        l, s = garantir_credenciais(id_sel, nome_sel)
+                        if email_sel:
+                            enviar_credenciais_thread(email_sel, nome_sel, l, s)
+                            st.success(f"Enviado para {email_sel}!")
+                            st.info(f"Login: {l} | Senha: {s}")
+                        else:
+                            st.warning("Sem e-mail cadastrado.")
+                            st.info(f"Login: {l} | Senha: {s}")
+                else: st.warning("Sem alunos.")
+
+            elif st.session_state.get('acc_mode') == 'turma':
+                if not df_alunos.empty:
+                    turmas = sorted(df_alunos['turma'].dropna().unique())
+                    t_sel = st.selectbox("Selecione a Turma:", turmas)
+                    
+                    if st.button(f"DISPARAR PARA {t_sel}"):
+                        alunos_turma = df_alunos[df_alunos['turma'] == t_sel]
+                        count = 0
+                        bar = st.progress(0)
+                        for i, row in alunos_turma.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']:
+                                enviar_credenciais_thread(row['email'], row['nome'], l, s)
+                                count += 1
+                            bar.progress((i + 1) / len(alunos_turma))
+                        st.success(f"Processo finalizado! {count} e-mails enviados.")
+                else: st.warning("Sem alunos.")
+
+            elif st.session_state.get('acc_mode') == 'todos':
+                st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
+                if st.button("CONFIRMAR ENVIO EM MASSA"):
+                    if not df_alunos.empty:
+                        count = 0
+                        bar = st.progress(0)
+                        for i, row in df_alunos.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']:
+                                enviar_credenciais_thread(row['email'], row['nome'], l, s)
+                                count += 1
+                            bar.progress((i + 1) / len(df_alunos))
+                        st.success(f"Envio concluído! {count} mensagens enviadas.")
+        
+        with tab_admins:
+            st.subheader("Cadastrar Novo Admin")
+            with st.form("novo_admin"):
+                nome_adm = st.text_input("Nome")
+                email_adm = st.text_input("E-mail (Login)")
+                senha_adm = st.text_input("Senha", type="password")
+                if st.form_submit_button("CRIAR ADMIN"):
+                    if criar_admin(email_adm, senha_adm, nome_adm): st.success("Criado com sucesso!")
+                    else: st.error("Erro: E-mail já existe.")
+            
+            st.subheader("Gerenciar Admins")
+            df_admins = get_all_admins()
+            for index, row in df_admins.iterrows():
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.write(f"**{row['nome']}** ({row['email']})")
+                status = "Ativo" if row['ativo'] == 1 else "Bloqueado"
+                c2.write(status)
+                if row['email'] != 'admin': # Não permite bloquear o super-admin
+                    btn_label = "Bloquear" if row['ativo'] == 1 else "Ativar"
+                    if c3.button(btn_label, key=f"adm_{row['id']}"):
+                        novo_status = 0 if row['ativo'] == 1 else 1
+                        toggle_admin_status(row['id'], novo_status)
+                        st.rerun()
+
+if st.session_state['logado']:
+    if st.session_state['user_type'] == 'admin':
+        menu_admin()
+    else:
+        menu_aluno()
+else: login_screen()
