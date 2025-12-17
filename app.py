@@ -110,20 +110,40 @@ def init_db():
     
     conn.commit(); conn.close()
 
+# --- FUNÇÃO DE RESET DE ADMIN (NOVA) ---
+def reset_admin_padrao():
+    try:
+        conn = sqlite3.connect(DB_FILE)
+        c = conn.cursor()
+        # Apaga a tabela antiga que pode estar bugada
+        c.execute("DROP TABLE IF EXISTS admins")
+        conn.commit()
+        conn.close()
+        
+        # Recria do zero
+        init_db()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao resetar: {e}")
+        return False
+
 # --- FUNÇÕES DE LOGIN E CREDENCIAIS ---
 def verificar_login(usuario, senha):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
     
     # Tenta como ADMIN
     try:
-        c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
-        admin = c.fetchone()
-        if admin:
-            conn.close()
-            if admin[2] == 1: 
-                perms = admin[3] if admin[3] else ""
-                return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
-            else: return {'tipo': 'bloqueado'}
+        # Garante que a query só rode se a tabela existir
+        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admins'")
+        if c.fetchone():
+            c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
+            admin = c.fetchone()
+            if admin:
+                conn.close()
+                if admin[2] == 1: 
+                    perms = admin[3] if admin[3] else ""
+                    return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
+                else: return {'tipo': 'bloqueado'}
     except Exception as e:
         print(f"Erro SQL Admin: {e}")
 
@@ -134,8 +154,6 @@ def verificar_login(usuario, senha):
         conn.close()
         if aluno: return {'tipo': 'aluno', 'id': aluno[0], 'nome': aluno[1]}
     except Exception as e:
-        # Se cair aqui, é porque a coluna login/senha não existe mesmo após init_db
-        # Retorna None para não quebrar a tela
         print(f"Erro SQL Aluno: {e}")
         conn.close()
         
@@ -450,6 +468,20 @@ def get_relatorio_recargas_dia(df):
     except: d = pd.DataFrame()
     conn.close(); return d
 
+# --- CRUD ALIMENTOS ---
+def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
+def update_alimento_db(id,n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alimentos SET nome=?,valor=?,tipo=? WHERE id=?',(n,v,t,id)); conn.commit(); conn.close()
+def delete_alimento_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('DELETE FROM alimentos WHERE id=?',(id,)); conn.commit(); conn.close()
+def get_all_alimentos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alimentos",conn); conn.close(); return df
+def upsert_aluno(n,s,t,tu,nas,em,t1,t2,t3,sl):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("SELECT id FROM alunos WHERE nome=?",(n,)); d=c.fetchone(); ns=str(nas) if nas else None
+    if d: c.execute('UPDATE alunos SET serie=?,turma=?,turno=?,nascimento=?,email=?,telefone1=?,telefone2=?,telefone3=? WHERE nome=?',(s,t,tu,ns,em,t1,t2,t3,n))
+    else: c.execute('INSERT INTO alunos (nome,serie,turma,turno,nascimento,email,telefone1,telefone2,telefone3,saldo) VALUES (?,?,?,?,?,?,?,?,?,?)',(n,s,t,tu,ns,em,t1,t2,t3,sl))
+    conn.commit(); conn.close()
+def update_aluno_manual(id,n,s,t,tu,ns,em,t1,t2,t3,sl): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('UPDATE alunos SET nome=?,serie=?,turma=?,turno=?,nascimento=?,email=?,telefone1=?,telefone2=?,telefone3=?,saldo=? WHERE id=?',(n,s,t,tu,ns,em,t1,t2,t3,sl,id)); conn.commit(); conn.close()
+def delete_aluno_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?",(id,)); conn.commit(); conn.close()
+def delete_turma_db(t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE turma=?",(t,)); ct=c.rowcount; conn.commit(); conn.close(); return ct
+
 # --- FUNÇÃO DE VENDA (AGORA NO LUGAR CERTO, ANTES DOS MENUS) ---
 def realizar_venda_form(aid, origin=None):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
@@ -520,6 +552,15 @@ def login_screen():
                     st.rerun()
             else:
                 st.error("❌ Usuário ou senha inválidos")
+    
+    # BOTÃO DE SEGURANÇA PARA REPARAR O BANCO
+    with st.expander("🆘 Problemas no acesso?"):
+        st.write("Se não conseguir acessar com a senha padrão, clique abaixo para resetar a tabela de administradores.")
+        if st.button("RESTAURAR ADMIN PADRÃO"):
+            if reset_admin_padrao():
+                st.success("Tabela resetada! Tente: admin / admin123")
+                time.sleep(2)
+                st.rerun()
 
 def menu_aluno():
     st.sidebar.title(f"Olá, {st.session_state['user_name'].split()[0]}")
@@ -805,7 +846,7 @@ def menu_admin():
             df_a = get_relatorio_alunos_dia(d_str)
             if not df_a.empty:
                 st.dataframe(df_a, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                c_p1, c_p2 = st.columns(2)
+                c1, c2 = st.columns(2)
                 criar_botao_pdf_a4(df_a, "RELATORIO ALUNOS")
                 criar_botao_pdf_termico(df_a, "RELATORIO ALUNOS")
             else: st.info("Nada vendido.")
@@ -813,7 +854,7 @@ def menu_admin():
             df_r = get_relatorio_recargas_dia(d_str)
             if not df_r.empty:
                 st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                c_p1, c_p2 = st.columns(2)
+                c1, c2 = st.columns(2)
                 criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
                 criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
             else: st.info("Nenhuma recarga.")
