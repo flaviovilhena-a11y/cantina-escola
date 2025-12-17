@@ -31,7 +31,7 @@ CIDADE_BENEFICIARIO = "MANAUS"
 DB_FILE = 'cantina.db'
 
 # LISTA ATUALIZADA DE MODULOS
-LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "RELATÓRIOS DE VENDAS", "RELATÓRIO DE RECARGAS", "ENVIAR ACESSOS", "ADMINISTRADORES"]
+LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "CANCELAR VENDA", "RELATÓRIOS DE VENDAS", "RELATÓRIO DE RECARGAS", "ENVIAR ACESSOS", "ADMINISTRADORES"]
 
 def agora_manaus(): return datetime.now(FUSO_MANAUS)
 
@@ -55,12 +55,12 @@ def init_db():
     
     # Cria usuário admin padrão
     c.execute("SELECT * FROM admins WHERE email='admin'")
+    perms_str = ",".join(LISTA_PERMISSOES)
     if not c.fetchone():
-        perms_str = ",".join(LISTA_PERMISSOES)
         c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, ?, ?)", ('admin', 'admin123', 'Super Admin', 1, perms_str))
     else:
-        perms_str = ",".join(LISTA_PERMISSOES)
-        c.execute("UPDATE admins SET permissoes = ? WHERE email='admin' AND (permissoes IS NULL OR permissoes = '')", (perms_str,))
+        # Atualiza permissões para garantir acesso ao novo módulo
+        c.execute("UPDATE admins SET permissoes = ? WHERE email='admin'", (perms_str,))
 
     # 2. Tabela Alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL)''')
@@ -88,8 +88,8 @@ def init_db():
     if not check_column_exists(c, 'recargas', 'realizado_por'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN realizado_por TEXT")
         except: pass
-
-    # 5. Tabela de Controle de Envios Automáticos (NOVO)
+    
+    # 5. Controle Envios
     c.execute('''CREATE TABLE IF NOT EXISTS controle_envios (data_envio TEXT PRIMARY KEY, status TEXT)''')
     
     conn.commit(); conn.close()
@@ -113,7 +113,9 @@ def verificar_login(usuario, senha):
             if admin[2] == 1: 
                 perms = admin[3] if admin[3] else ""
                 lista_perms = perms.split(',')
+                # Compatibilidade
                 if "RELATÓRIOS" in lista_perms: lista_perms.append("RELATÓRIOS DE VENDAS")
+                if "SALDO" in lista_perms: lista_perms.append("CANCELAR VENDA") # Garante acesso para quem já tinha saldo
                 return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': lista_perms}
             else: return {'tipo': 'bloqueado'}
     except: pass
@@ -270,71 +272,30 @@ def disparar_alerta(aluno_id, tipo, valor, detalhes):
 
 # --- AUTOMAÇÃO: EMAIL SALDO BAIXO ---
 def verificar_saldo_baixo_e_enviar():
-    """Roda diariamente às 06:00 de Manaus, Seg-Sex"""
-    agora = agora_manaus()
-    hoje_str = agora.strftime("%Y-%m-%d")
-    
-    # Verifica dia da semana (0=Segunda, 4=Sexta)
-    if agora.weekday() > 4: 
-        return
-    
-    # Verifica horário (A partir de 06:00 e antes das 07:00)
-    if not (6 <= agora.hour < 7):
-        return
-
-    # Verifica se já enviou hoje
-    conn = sqlite3.connect(DB_FILE)
-    c = conn.cursor()
+    agora = agora_manaus(); hoje_str = agora.strftime("%Y-%m-%d")
+    if agora.weekday() > 4: return
+    if not (6 <= agora.hour < 7): return
+    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
     c.execute("SELECT status FROM controle_envios WHERE data_envio = ?", (hoje_str,))
-    if c.fetchone():
-        conn.close()
-        return # Já enviado hoje
-
-    # Lógica de Envio
+    if c.fetchone(): conn.close(); return 
     try:
         c.execute("SELECT nome, email, saldo FROM alunos WHERE saldo <= 10.00 AND email IS NOT NULL AND email != ''")
-        alunos_baixo_saldo = c.fetchall()
-        
-        for nome, email, saldo in alunos_baixo_saldo:
+        for nome, email, saldo in c.fetchall():
             if "@" in str(email):
-                assunto = "⚠️ Aviso de Saldo Baixo - Cantina Peixinho Dourado"
-                msg_html = f"""
-                <html><body>
-                    <h3>Olá, responsável por {nome}!</h3>
-                    <p>Lembramos que o saldo do aluno <b>{nome}</b> no Sistema da Cantina Escolar é de <b style="color:red">R$ {saldo:.2f}</b>.</p>
-                    <p>Para evitar bloqueio nas compras, acesse o sistema e realize a recarga via Pix.</p>
-                    <hr>
-                    <p style='font-size:12px; color:gray'>Cantina Peixinho Dourado</p>
-                </body></html>
-                """
-                # Envia sem thread para garantir que o script não morra antes
-                enviar_email_brevo_thread(email, nome, assunto, msg_html)
-                time.sleep(0.2) # Pausa leve para não estourar API
+                msg_html = f"<html><body><h3>Olá, responsável por {nome}!</h3><p>Lembramos que o saldo do aluno <b>{nome}</b> no Sistema da Cantina Escolar é de <b style='color:red'>R$ {saldo:.2f}</b>.</p><p>Acesse o sistema e realize a recarga.</p><hr><p style='font-size:12px; color:gray'>Cantina Peixinho Dourado</p></body></html>"
+                enviar_email_brevo_thread(email, nome, "⚠️ Aviso de Saldo Baixo - Cantina Peixinho Dourado", msg_html); time.sleep(0.2)
+        c.execute("INSERT INTO controle_envios (data_envio, status) VALUES (?, ?)", (hoje_str, "ENVIADO")); conn.commit()
+    except: pass
+    finally: conn.close()
 
-        # Registra envio
-        c.execute("INSERT INTO controle_envios (data_envio, status) VALUES (?, ?)", (hoje_str, "ENVIADO"))
-        conn.commit()
-        print(f"E-mails de saldo baixo enviados em {hoje_str}")
-    except Exception as e:
-        print(f"Erro no envio automatico: {e}")
-    finally:
-        conn.close()
-
-# Inicia a thread de verificação em background (Singleton)
 @st.cache_resource
 def start_scheduler():
-    def scheduler_loop():
+    def loop():
         while True:
-            try:
-                verificar_saldo_baixo_e_enviar()
-                time.sleep(60) # Verifica a cada minuto
-            except:
-                time.sleep(60)
-                
-    t = threading.Thread(target=scheduler_loop, daemon=True)
-    t.start()
-
-start_scheduler() # Inicia o robô
+            try: verificar_saldo_baixo_e_enviar(); time.sleep(60)
+            except: time.sleep(60)
+    threading.Thread(target=loop, daemon=True).start()
+start_scheduler()
 
 # --- PIX ---
 class PixPayload:
@@ -367,19 +328,17 @@ def get_historico_preferencias(aid):
                 except: pass
     return cnt
 
-# --- DB ESCRITA (COM REGISTRO DO USUÁRIO LOGADO) ---
+# --- DB ESCRITA ---
 def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
 def registrar_venda(aid,i,v): 
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); dm=agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
     c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,dm)); conn.commit(); conn.close()
-
 def registrar_recarga(aid, v, m, usuario_logado, nsu=None): 
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     dm = agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
     c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu,realizado_por) VALUES (?,?,?,?,?,?)",(aid, v, dm, m, nsu, usuario_logado))
     c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]
     c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
-
 def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
@@ -519,7 +478,6 @@ def get_relatorio_recargas_detalhado(filtro_tempo):
     conn = sqlite3.connect(DB_FILE)
     try:
         dc = calcular_data_corte(filtro_tempo)
-        # Seleciona nova coluna realizado_por
         query = """
             SELECT r.data_hora, a.nome, r.valor, r.metodo_pagamento, r.realizado_por
             FROM recargas r 
@@ -534,11 +492,9 @@ def get_relatorio_recargas_detalhado(filtro_tempo):
                 dc_naive = dc.replace(tzinfo=None)
                 if dt_obj < dc_naive: continue
             
-            # LÓGICA DE EXIBIÇÃO DE ORIGEM
             if metodo == "PIX (QR)":
                 origem = "BANCO (Pix Automático)"
             else:
-                # Mostra quem fez se for manual
                 quem = realizado_por if realizado_por else "Sistema"
                 origem = f"MANUAL ({nome_aluno}) | Por: {quem}"
             
@@ -594,7 +550,6 @@ def realizar_venda_form(aid, origin=None):
             for i,q in qs.items():
                 if q>0: it=df[df['id']==i].iloc[0]; t+=it['valor']*q; its.append(f"{q}x {it['nome']}")
             if t>0: 
-                # --- VERIFICAÇÃO DE SALDO ---
                 if al['saldo'] < t:
                     st.error(f"❌ Saldo insuficiente! Falta R$ {t - al['saldo']:.2f}")
                 else:
@@ -667,26 +622,33 @@ def menu_admin():
     if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
 
     perms = st.session_state.get('user_perms', [])
-    c1, c2 = st.columns(2); c3, c4 = st.columns(2); c5, c6 = st.columns(2)
+    c1, c2, c3 = st.columns(3)
+    c4, c5, c6 = st.columns(3)
+    c7, c8, c9 = st.columns(3)
     
+    # Linha 1
     if "CADASTRO" in perms:
         if c1.button("CADASTROS", use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
     if "COMPRAR" in perms:
         if c2.button("INICIAR VENDAS", use_container_width=True): st.session_state.update(menu='comprar', modo=None)
-    if "SALDO" in perms:
-        if c3.button("SALDO", use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
     if "RECARGA" in perms:
-        if c4.button("RECARGA", use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
+        if c3.button("RECARGA", use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
     
+    # Linha 2
+    if "SALDO" in perms:
+        if c4.button("SALDO", use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
+    if "CANCELAR VENDA" in perms:
+        if c5.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state.update(menu='cancelar', canc_mode=None)
     if "RELATÓRIOS DE VENDAS" in perms:
-        if c5.button("RELATÓRIOS DE VENDAS", use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
-    
+        if c6.button("RELATÓRIOS DE VENDAS", use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
+        
+    # Linha 3
     if "RELATÓRIO DE RECARGAS" in perms:
-        if c6.button("RELATÓRIO DE RECARGAS", use_container_width=True): st.session_state.update(menu='rel_recargas')
-
-    st.markdown("---")
+        if c7.button("RELATÓRIO DE RECARGAS", use_container_width=True): st.session_state.update(menu='rel_recargas')
+    if "ENVIAR ACESSOS" in perms:
+        if c8.button("ENVIAR ACESSOS", use_container_width=True): st.session_state.update(menu='enviar_acessos', acc_mode=None)
     if "ADMINISTRADORES" in perms:
-        if st.button("👥 ADMINISTRADORES", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
+        if c9.button("👥 ADMINISTRADORES", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
 
     menu=st.session_state.get('menu')
 
@@ -820,7 +782,6 @@ def menu_admin():
                 with st.form("rman"):
                     v=st.number_input("Valor R$",0.0,step=5.0); m=st.selectbox("Forma",["DINHEIRO", "PIX (MANUAL)", "DÉBITO", "CRÉDITO"])
                     if st.form_submit_button("CONFIRMAR"):
-                        # PASSA USUÁRIO LOGADO
                         registrar_recarga(id_a,v,m, usuario_logado=st.session_state['user_name'])
                         disparar_alerta(id_a, "Recarga", v, f"Forma: {m}"); st.success("Sucesso!"); st.rerun()
             elif st.session_state.get('rec_mode')=='pix':
@@ -832,7 +793,6 @@ def menu_admin():
                     with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
                     with c_txt: st.code(payload); st.warning("Confira o comprovante.")
                     if st.button("✅ CONFIRMAR PIX"):
-                        # PASSA USUÁRIO LOGADO MESMO SENDO PIX (Para saber quem validou)
                         registrar_recarga(id_a, v, "PIX (QR)", usuario_logado=st.session_state['user_name'])
                         disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code"); st.success("Creditado!"); st.rerun()
         else: st.warning("Sem alunos.")
@@ -878,43 +838,48 @@ def menu_admin():
 
     if menu == 'hist' and "SALDO" in perms:
         st.markdown("---"); st.subheader("📜 Extrato e Histórico")
-        c1, c2 = st.columns(2)
-        if c1.button("📜 EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
-        if c2.button("🚫 CANCELAR VENDA", use_container_width=True): st.session_state['hist_mode'] = 'cancel'; st.session_state['hist_id'] = None
         df = get_all_alunos()
         if not df.empty:
             df = df.sort_values(by='nome'); df['lbl'] = df['nome'] + " | " + df['turma'].astype(str)
-            if st.session_state.get('hist_mode') == 'view':
-                if not st.session_state.get('hist_id'):
-                    sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
-                    if st.button("ABRIR EXTRATO"): st.session_state['hist_id'] = int(df[df['lbl'] == sel].iloc[0]['id']); st.rerun()
-                else:
-                    if st.button("⬅️ Trocar Aluno"): st.session_state['hist_id'] = None; st.rerun()
-                    conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
-                    st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
-                    filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
-                    if st.button("EXIBIR"):
-                        ext=get_extrato_aluno(al['id'], filt)
-                        if not ext.empty: 
-                            st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                            c_p1, c_p2 = st.columns(2)
-                            criar_botao_pdf_a4(ext, f"EXTRATO: {al['nome']}")
-                            criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
-                        else: st.info("Vazio.")
-            elif st.session_state.get('hist_mode') == 'cancel':
-                st.info("⚠️ Cancelamento de vendas")
-                sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique()); id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
-                filt_canc = st.selectbox("Período:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
-                vendas_lista = get_vendas_cancelar(id_aluno, filt_canc)
-                if not vendas_lista.empty:
-                    vendas_lista['desc'] = vendas_lista.apply(lambda x: f"ID: {x['id']} | {x['data_hora']} | R$ {x['valor_total']:.2f} | {x['itens']}", axis=1)
-                    venda_sel = st.selectbox("Selecione a compra:", vendas_lista['desc'])
-                    if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
-                        id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", "")); valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
-                        cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
-                        disparar_alerta(id_aluno, "Estorno/Cancelamento", valor_estorno, "Venda cancelada pelo operador")
-                        st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
-                else: st.warning("Nenhuma venda encontrada.")
+            sel = st.selectbox("Selecione o Aluno:", df['lbl'].unique())
+            if st.button("ABRIR EXTRATO"): 
+                st.session_state['hist_id'] = int(df[df['lbl'] == sel].iloc[0]['id'])
+                st.session_state['hist_mode'] = 'view'
+            
+            if st.session_state.get('hist_mode') == 'view' and st.session_state.get('hist_id'):
+                conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(st.session_state['hist_id'],)); al=c.fetchone(); conn.close()
+                st.markdown(f"<div style='background:#f0f2f6;padding:20px;text-align:center'><h3>{al['nome']}</h3><h1>R$ {al['saldo']:.2f}</h1></div>",unsafe_allow_html=True)
+                filt = st.selectbox("Filtro:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
+                ext=get_extrato_aluno(al['id'], filt)
+                if not ext.empty: 
+                    st.dataframe(ext, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+                    c_p1, c_p2 = st.columns(2)
+                    criar_botao_pdf_a4(ext, f"EXTRATO: {al['nome']}")
+                    criar_botao_pdf_termico(ext, f"EXTRATO: {al['nome']}")
+                else: st.info("Vazio.")
+        else: st.warning("Sem alunos.")
+
+    if menu == 'cancelar' and "CANCELAR VENDA" in perms:
+        st.markdown("---"); st.subheader("🚫 Cancelar Venda")
+        df = get_all_alunos()
+        if not df.empty:
+            df = df.sort_values(by='nome'); df['lbl'] = df['nome'] + " | " + df['turma'].astype(str)
+            sel = st.selectbox("Selecione o Aluno para Estorno:", df['lbl'].unique())
+            id_aluno = int(df[df['lbl'] == sel].iloc[0]['id'])
+            
+            filt_canc = st.selectbox("Período da Venda:", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
+            vendas_lista = get_vendas_cancelar(id_aluno, filt_canc)
+            
+            if not vendas_lista.empty:
+                vendas_lista['desc'] = vendas_lista.apply(lambda x: f"ID: {x['id']} | {x['data_hora']} | R$ {x['valor_total']:.2f} | {x['itens']}", axis=1)
+                venda_sel = st.selectbox("Selecione a compra:", vendas_lista['desc'])
+                if st.button("🗑️ CONFIRMAR CANCELAMENTO", type="primary"):
+                    id_transacao = int(venda_sel.split(" | ")[0].replace("ID: ", ""))
+                    valor_estorno = float(venda_sel.split(" | ")[2].replace("R$ ", ""))
+                    cancelar_venda_db(id_transacao, id_aluno, valor_estorno)
+                    disparar_alerta(id_aluno, "Estorno/Cancelamento", valor_estorno, "Venda cancelada pelo operador")
+                    st.success(f"Cancelado! R$ {valor_estorno:.2f} devolvidos."); time.sleep(2); st.rerun()
+            else: st.warning("Nenhuma venda encontrada para este aluno no período.")
         else: st.warning("Sem alunos.")
 
     if menu == 'relatorios' and "RELATÓRIOS DE VENDAS" in perms:
@@ -926,8 +891,6 @@ def menu_admin():
         if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
         if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
         
-        # REMOVIDO BOTÃO DE RECARGAS DAQUI COMO SOLICITADO
-
         if st.session_state.get('rel_mode') == 'produtos':
             vis_mode = st.radio("Modo de Visualização:", ["VISÃO GERAL (TOTAL)", "DETALHADO POR TURMA"], horizontal=True)
             if vis_mode == "VISÃO GERAL (TOTAL)":
@@ -960,24 +923,17 @@ def menu_admin():
             
     if menu == 'rel_recargas' and "RELATÓRIO DE RECARGAS" in perms:
         st.markdown("---"); st.subheader("💳 Relatório Detalhado de Recargas")
-        
         filtro_tempo = st.radio("Período:", ["HOJE", "ÚLTIMOS 7 DIAS", "ÚLTIMOS 15 DIAS", "ÚLTIMOS 30 DIAS"], horizontal=True)
         st.write(f"Exibindo recargas: **{filtro_tempo}**")
-        
         df_recargas = get_relatorio_recargas_detalhado(filtro_tempo)
-        
         if not df_recargas.empty:
-            # Calcula total
             total_recargas = df_recargas['Valor'].sum()
             st.metric("Total Recarregado", f"R$ {total_recargas:.2f}")
-            
             st.dataframe(df_recargas, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-            
             c1, c2 = st.columns(2)
             criar_botao_pdf_a4(df_recargas, f"RECARGAS ({filtro_tempo})")
             criar_botao_pdf_termico(df_recargas, f"RECARGAS ({filtro_tempo})")
-        else:
-            st.info("Nenhuma recarga encontrada neste período.")
+        else: st.info("Nenhuma recarga encontrada neste período.")
 
     if menu == 'acesso' and "ADMINISTRADORES" in perms:
         st.markdown("---"); st.subheader("🔑 Gestão de Administradores")
