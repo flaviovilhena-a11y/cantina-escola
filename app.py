@@ -65,12 +65,22 @@ def init_db():
     else:
         c.execute("UPDATE admins SET permissoes = ? WHERE email='admin'", (perms_str,))
 
-    # 2. Tabela Alunos
+    # 2. Tabela Alunos (ATUALIZADA COM LIMITES)
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL)''')
+    
+    # Colunas extras de Login/Senha
     for col, tipo in [('telefone3', 'TEXT'), ('login', 'TEXT'), ('senha', 'TEXT')]:
         if not check_column_exists(c, 'alunos', col):
             try: c.execute(f"ALTER TABLE alunos ADD COLUMN {col} {tipo}")
             except: pass
+            
+    # --- NOVAS COLUNAS: LIMITE DIÁRIO ---
+    if not check_column_exists(c, 'alunos', 'limite_ativo'):
+        try: c.execute("ALTER TABLE alunos ADD COLUMN limite_ativo INTEGER DEFAULT 0") # 0 = Desativado, 1 = Ativado
+        except: pass
+    if not check_column_exists(c, 'alunos', 'limite_valor'):
+        try: c.execute("ALTER TABLE alunos ADD COLUMN limite_valor REAL DEFAULT 0.0")
+        except: pass
 
     # 3. Tabela Alimentos
     c.execute('''CREATE TABLE IF NOT EXISTS alimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, valor REAL, tipo TEXT)''')
@@ -135,7 +145,6 @@ def verificar_login(usuario, senha):
 def gerar_senha_aleatoria(tamanho=6):
     return ''.join(random.choice(string.ascii_letters + string.digits) for i in range(tamanho))
 
-# --- FUNÇÃO CORRIGIDA E ROBUSTA PARA CREDENCIAIS ---
 def garantir_credenciais(aluno_id, nome_aluno):
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
@@ -145,7 +154,6 @@ def garantir_credenciais(aluno_id, nome_aluno):
         
         # --- Lógica de Geração de Login ---
         if not dados or not dados[0]:
-            # Limpeza do nome
             primeiro_nome = nome_aluno.split()[0].lower()
             for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ã','a'),('õ','o'),('ç','c')]:
                 primeiro_nome = primeiro_nome.replace(a, b)
@@ -162,20 +170,18 @@ def garantir_credenciais(aluno_id, nome_aluno):
         else:
             senha_nova = dados[1]
 
-        # Salva no Banco
         c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
         conn.commit()
         return login_novo, senha_nova
 
     except sqlite3.OperationalError as e:
-        # Se as colunas não existirem, cria agora
         if "no such column" in str(e):
             try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT")
             except: pass
             try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT")
             except: pass
             conn.commit()
-            return garantir_credenciais(aluno_id, nome_aluno) # Tenta de novo
+            return garantir_credenciais(aluno_id, nome_aluno)
         else:
             st.error(f"Erro BD: {e}")
             return None, None
@@ -185,9 +191,34 @@ def garantir_credenciais(aluno_id, nome_aluno):
     finally:
         conn.close()
 
+# --- FUNÇÕES AUXILIARES DE LIMITE ---
+def get_gasto_hoje_aluno(aluno_id):
+    """Retorna quanto o aluno gastou hoje"""
+    hoje = agora_manaus().strftime("%d/%m/%Y")
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT SUM(valor_total) FROM transacoes WHERE aluno_id = ? AND data_hora LIKE ?", (aluno_id, f"{hoje}%"))
+        total = cursor.fetchone()[0]
+        return total if total else 0.0
+    except: return 0.0
+    finally: conn.close()
+
+def update_limite_aluno(aluno_id, ativo, valor):
+    """Atualiza as configurações de limite do aluno"""
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        c = conn.cursor()
+        c.execute("UPDATE alunos SET limite_ativo = ?, limite_valor = ? WHERE id = ?", (1 if ativo else 0, valor, aluno_id))
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"Erro ao salvar limite: {e}")
+        return False
+    finally: conn.close()
+
 # --- FUNÇÕES MERCADO PAGO ---
 def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
-    # Proteção para e-mail inválido
     if not email_pagador or "@" not in str(email_pagador) or len(str(email_pagador)) < 5:
         email_pagador = "pagador@cantina.com"
         
@@ -211,7 +242,7 @@ def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
             return payment_id, qr_code, qr_code_base64
         else:
             st.error(f"Erro MP: {result.get('message', 'Erro desconhecido')}")
-            st.json(result) # Mostra o erro real na tela
+            st.json(result)
             return None, None, None
     except Exception as e:
         st.error(f"Erro Python MP: {e}")
@@ -592,7 +623,7 @@ def update_aluno_manual(id,n,s,t,tu,ns,em,t1,t2,t3,sl): conn=sqlite3.connect(DB_
 def delete_aluno_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?",(id,)); conn.commit(); conn.close()
 def delete_turma_db(t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE turma=?",(t,)); ct=c.rowcount; conn.commit(); conn.close(); return ct
 
-# --- FUNÇÃO DE VENDA (COM BLOQUEIO SALDO NEGATIVO) ---
+# --- FUNÇÃO DE VENDA (COM TRAVA DE LIMITE) ---
 def realizar_venda_form(aid, origin=None):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
     st.markdown(f"**{al['nome']}** | Saldo: R$ {al['saldo']:.2f}"); df=get_all_alimentos()
@@ -619,14 +650,25 @@ def realizar_venda_form(aid, origin=None):
             for i,q in qs.items():
                 if q>0: it=df[df['id']==i].iloc[0]; t+=it['valor']*q; its.append(f"{q}x {it['nome']}")
             if t>0: 
+                # 1. VERIFICA SALDO
                 if al['saldo'] < t:
                     st.error(f"❌ Saldo insuficiente! Falta R$ {t - al['saldo']:.2f}")
                 else:
-                    try:
-                        update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
-                        disparar_alerta(aid, "Compra", t, ", ".join(its))
-                        st.success("✅ Venda realizada com sucesso!"); time.sleep(1.5); st.session_state['aid_venda']=None; st.rerun()
-                    except Exception as e: st.error(f"❌ Erro na venda: {e}")
+                    # 2. VERIFICA LIMITE DIÁRIO
+                    bloqueado_por_limite = False
+                    if al['limite_ativo'] == 1:
+                        gasto_hoje = get_gasto_hoje_aluno(aid)
+                        limite = float(al['limite_valor'])
+                        if (gasto_hoje + t) > limite:
+                            bloqueado_por_limite = True
+                            st.error(f"🚫 Limite Diário Excedido! Gasto Hoje: R$ {gasto_hoje:.2f} + Compra: R$ {t:.2f} > Limite: R$ {limite:.2f}")
+                    
+                    if not bloqueado_por_limite:
+                        try:
+                            update_saldo_aluno(aid,al['saldo']-t); registrar_venda(aid,", ".join(its),t)
+                            disparar_alerta(aid, "Compra", t, ", ".join(its))
+                            st.success("✅ Venda realizada com sucesso!"); time.sleep(1.5); st.session_state['aid_venda']=None; st.rerun()
+                        except Exception as e: st.error(f"❌ Erro na venda: {e}")
             else: st.warning("Selecione algo.")
         
         if back:
@@ -675,7 +717,30 @@ def menu_aluno():
             if not df_ext.empty: st.dataframe(df_ext, hide_index=True, use_container_width=True)
             else: st.info("Nenhuma movimentação no período.")
         with tab2: st.write("Para recarregar, mostre este QR Code no caixa ou faça um Pix e envie o comprovante."); st.info(f"Chave Pix: {CHAVE_PIX_ESCOLA}")
-        with tab3: st.text_input("Nome", aluno['nome'], disabled=True); st.text_input("Turma", f"{aluno['serie']} - {aluno['turma']}", disabled=True); st.text_input("Matrícula (Login)", aluno['login'], disabled=True)
+        with tab3: 
+            st.subheader("Dados Cadastrais")
+            st.text_input("Nome", aluno['nome'], disabled=True)
+            st.text_input("Turma", f"{aluno['serie']} - {aluno['turma']}", disabled=True)
+            st.text_input("Matrícula (Login)", aluno['login'], disabled=True)
+            
+            st.markdown("---")
+            st.subheader("🛡️ Controle de Gastos")
+            with st.form("form_limite"):
+                st.write("Defina um valor máximo que o aluno pode gastar por dia.")
+                
+                # Checkbox para ativar/desativar
+                ativo_atual = True if aluno['limite_ativo'] == 1 else False
+                novo_ativo = st.checkbox("Habilitar Limite Diário", value=ativo_atual)
+                
+                # Input de valor
+                valor_atual = float(aluno['limite_valor']) if aluno['limite_valor'] else 0.0
+                novo_valor = st.number_input("Valor do Limite (R$)", min_value=0.0, step=1.0, value=valor_atual)
+                
+                if st.form_submit_button("SALVAR CONFIGURAÇÃO"):
+                    if update_limite_aluno(aluno['id'], novo_ativo, novo_valor):
+                        st.success("Configuração atualizada com sucesso!")
+                        time.sleep(1)
+                        st.rerun()
 
 def menu_admin():
     st.sidebar.title("Menu Admin")
