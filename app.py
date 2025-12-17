@@ -35,11 +35,14 @@ LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "RELATÓRIOS", "A
 
 def agora_manaus(): return datetime.now(FUSO_MANAUS)
 
-# --- BANCO DE DADOS (CORREÇÃO DE ESTRUTURA) ---
+# --- BANCO DE DADOS (CORREÇÃO DE ESTRUTURA REFORÇADA) ---
 def check_column_exists(cursor, table_name, column_name):
-    cursor.execute(f"PRAGMA table_info({table_name})")
-    columns = [info[1] for info in cursor.fetchall()]
-    return column_name in columns
+    try:
+        cursor.execute(f"PRAGMA table_info({table_name})")
+        columns = [info[1] for info in cursor.fetchall()]
+        return column_name in columns
+    except:
+        return False
 
 def init_db():
     conn = sqlite3.connect(DB_FILE)
@@ -54,50 +57,63 @@ def init_db():
         ativo INTEGER DEFAULT 1
     )''')
     
-    # CORREÇÃO: Verifica se a coluna 'permissoes' existe, se não, cria.
     if not check_column_exists(c, 'admins', 'permissoes'):
-        c.execute("ALTER TABLE admins ADD COLUMN permissoes TEXT")
+        try: c.execute("ALTER TABLE admins ADD COLUMN permissoes TEXT")
+        except: pass
     
-    # Cria usuário admin padrão se não existir
+    # Cria usuário admin padrão
     c.execute("SELECT * FROM admins WHERE email='admin'")
     if not c.fetchone():
         perms_str = ",".join(LISTA_PERMISSOES)
         c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, ?, ?)", 
                   ('admin', 'admin123', 'Super Admin', 1, perms_str))
     else:
-        # Garante que o admin tenha todas as permissões
+        # Atualiza permissões do admin se estiverem vazias
         perms_str = ",".join(LISTA_PERMISSOES)
         c.execute("UPDATE admins SET permissoes = ? WHERE email='admin' AND (permissoes IS NULL OR permissoes = '')", (perms_str,))
 
-    # 2. Tabela Alunos
+    # 2. Tabela Alunos (COM CORREÇÃO DE COLUNAS FALTANTES)
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL)''')
     
-    # CORREÇÃO: Verifica colunas novas de alunos
-    novas_cols_alunos = [('telefone3', 'TEXT'), ('login', 'TEXT'), ('senha', 'TEXT')]
-    for col, tipo in novas_cols_alunos:
-        if not check_column_exists(c, 'alunos', col):
-            c.execute(f"ALTER TABLE alunos ADD COLUMN {col} {tipo}")
+    # Lista de colunas obrigatórias para alunos
+    colunas_obrigatorias = [
+        ('telefone3', 'TEXT'),
+        ('login', 'TEXT'),
+        ('senha', 'TEXT')
+    ]
     
+    for col, tipo in colunas_obrigatorias:
+        if not check_column_exists(c, 'alunos', col):
+            try:
+                c.execute(f"ALTER TABLE alunos ADD COLUMN {col} {tipo}")
+            except Exception as e:
+                print(f"Aviso: Erro ao adicionar coluna {col}: {e}")
+
     # 3. Tabela Alimentos
     c.execute('''CREATE TABLE IF NOT EXISTS alimentos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, valor REAL, tipo TEXT)''')
     if not check_column_exists(c, 'alimentos', 'tipo'):
-        c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT")
-        c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
+        try:
+            c.execute("ALTER TABLE alimentos ADD COLUMN tipo TEXT")
+            c.execute("UPDATE alimentos SET tipo = 'ALIMENTO' WHERE tipo IS NULL")
+        except: pass
     
     # 4. Tabelas Transacionais
     c.execute('''CREATE TABLE IF NOT EXISTS transacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, itens TEXT, valor_total REAL, data_hora TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS recargas (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, valor REAL, data_hora TEXT, metodo_pagamento TEXT, nsu TEXT)''')
     
     if not check_column_exists(c, 'recargas', 'metodo_pagamento'):
-        c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT")
+        try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT")
+        except: pass
     if not check_column_exists(c, 'recargas', 'nsu'):
-        c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
+        try: c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
+        except: pass
     
     conn.commit(); conn.close()
 
 # --- FUNÇÕES DE LOGIN E CREDENCIAIS ---
 def verificar_login(usuario, senha):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    
     # Tenta como ADMIN
     try:
         c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
@@ -109,14 +125,20 @@ def verificar_login(usuario, senha):
                 return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
             else: return {'tipo': 'bloqueado'}
     except Exception as e:
-        # Se der erro aqui, é porque a coluna permissoes ainda nao foi criada corretamente. 
-        # O init_db deve corrigir, mas retornamos None por segurança.
-        print(f"Erro login admin: {e}")
-    
+        print(f"Erro SQL Admin: {e}")
+
     # Tenta como ALUNO
-    c.execute("SELECT id, nome FROM alunos WHERE login = ? AND senha = ?", (usuario, senha))
-    aluno = c.fetchone(); conn.close()
-    if aluno: return {'tipo': 'aluno', 'id': aluno[0], 'nome': aluno[1]}
+    try:
+        c.execute("SELECT id, nome FROM alunos WHERE login = ? AND senha = ?", (usuario, senha))
+        aluno = c.fetchone()
+        conn.close()
+        if aluno: return {'tipo': 'aluno', 'id': aluno[0], 'nome': aluno[1]}
+    except Exception as e:
+        # Se cair aqui, é porque a coluna login/senha não existe mesmo após init_db
+        # Retorna None para não quebrar a tela
+        print(f"Erro SQL Aluno: {e}")
+        conn.close()
+        
     return None
 
 def gerar_senha_aleatoria(tamanho=6):
@@ -124,16 +146,22 @@ def gerar_senha_aleatoria(tamanho=6):
 
 def garantir_credenciais(aluno_id, nome_aluno):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone()
-    if not dados or not dados[0]:
-        primeiro_nome = nome_aluno.split()[0].lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').replace('ã','a')
-        login_novo = f"{primeiro_nome}{aluno_id}"
-    else: login_novo = dados[0]
-    if not dados or not dados[1]: senha_nova = gerar_senha_aleatoria()
-    else: senha_nova = dados[1]
-    c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
-    conn.commit(); conn.close()
-    return login_novo, senha_nova
+    try:
+        c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone()
+        if not dados or not dados[0]:
+            primeiro_nome = nome_aluno.split()[0].lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').replace('ã','a')
+            login_novo = f"{primeiro_nome}{aluno_id}"
+        else: login_novo = dados[0]
+        if not dados or not dados[1]: senha_nova = gerar_senha_aleatoria()
+        else: senha_nova = dados[1]
+        c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
+        conn.commit()
+        return login_novo, senha_nova
+    except Exception as e:
+        st.error(f"Erro ao gerar credenciais: {e}")
+        return None, None
+    finally:
+        conn.close()
 
 # --- CLASSES PDF (TÉRMICO E A4) ---
 class PDFTermico(FPDF):
