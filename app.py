@@ -30,7 +30,7 @@ CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com"
 DB_FILE = 'cantina.db'
 
 # --- CONFIGURAÇÃO MERCADO PAGO ---
-# ⚠️ IMPORTANTE: SUBSTITUA ABAIXO PELO SEU "ACCESS TOKEN" DE PRODUÇÃO (COMEÇA COM APP_USR- OU TEST-)
+# ⚠️ IMPORTANTE: SUBSTITUA ABAIXO PELO SEU "ACCESS TOKEN" DE PRODUÇÃO
 MP_ACCESS_TOKEN = "SEU_ACCESS_TOKEN_AQUI" 
 sdk_mp = mercadopago.SDK(MP_ACCESS_TOKEN)
 
@@ -63,7 +63,6 @@ def init_db():
     if not c.fetchone():
         c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, ?, ?)", ('admin', 'admin123', 'Super Admin', 1, perms_str))
     else:
-        # Atualiza permissões
         c.execute("UPDATE admins SET permissoes = ? WHERE email='admin'", (perms_str,))
 
     # 2. Tabela Alunos
@@ -97,6 +96,9 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS controle_envios (data_envio TEXT PRIMARY KEY, status TEXT)''')
     
     conn.commit(); conn.close()
+
+# Garante que o DB existe ao iniciar
+init_db()
 
 # --- FUNÇÃO RESET ADMIN ---
 def reset_admin_padrao():
@@ -133,24 +135,59 @@ def verificar_login(usuario, senha):
 def gerar_senha_aleatoria(tamanho=6):
     return ''.join(random.choice(string.ascii_letters + string.digits) for i in range(tamanho))
 
+# --- FUNÇÃO CORRIGIDA E ROBUSTA PARA CREDENCIAIS ---
 def garantir_credenciais(aluno_id, nome_aluno):
-    conn = sqlite3.connect(DB_FILE); c = conn.cursor()
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
     try:
-        c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,)); dados = c.fetchone()
+        c.execute("SELECT login, senha FROM alunos WHERE id = ?", (aluno_id,))
+        dados = c.fetchone()
+        
+        # --- Lógica de Geração de Login ---
         if not dados or not dados[0]:
-            primeiro_nome = nome_aluno.split()[0].lower().replace('á','a').replace('é','e').replace('í','i').replace('ó','o').replace('ú','u').replace('ã','a')
+            # Limpeza do nome
+            primeiro_nome = nome_aluno.split()[0].lower()
+            for a, b in [('á','a'),('é','e'),('í','i'),('ó','o'),('ú','u'),('ã','a'),('õ','o'),('ç','c')]:
+                primeiro_nome = primeiro_nome.replace(a, b)
+            primeiro_nome = ''.join(filter(str.isalnum, primeiro_nome))
+            
+            if not primeiro_nome: primeiro_nome = f"aluno{aluno_id}"
             login_novo = f"{primeiro_nome}{aluno_id}"
-        else: login_novo = dados[0]
-        if not dados or not dados[1]: senha_nova = gerar_senha_aleatoria()
-        else: senha_nova = dados[1]
-        c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
-        conn.commit(); return login_novo, senha_nova
-    except: return None, None
-    finally: conn.close()
+        else:
+            login_novo = dados[0]
 
-# --- FUNÇÕES MERCADO PAGO (ROBUSTAS) ---
+        # --- Lógica de Geração de Senha ---
+        if not dados or not dados[1]:
+            senha_nova = gerar_senha_aleatoria()
+        else:
+            senha_nova = dados[1]
+
+        # Salva no Banco
+        c.execute("UPDATE alunos SET login = ?, senha = ? WHERE id = ?", (login_novo, senha_nova, aluno_id))
+        conn.commit()
+        return login_novo, senha_nova
+
+    except sqlite3.OperationalError as e:
+        # Se as colunas não existirem, cria agora
+        if "no such column" in str(e):
+            try: c.execute("ALTER TABLE alunos ADD COLUMN login TEXT")
+            except: pass
+            try: c.execute("ALTER TABLE alunos ADD COLUMN senha TEXT")
+            except: pass
+            conn.commit()
+            return garantir_credenciais(aluno_id, nome_aluno) # Tenta de novo
+        else:
+            st.error(f"Erro BD: {e}")
+            return None, None
+    except Exception as e:
+        st.error(f"Erro Geral: {e}")
+        return None, None
+    finally:
+        conn.close()
+
+# --- FUNÇÕES MERCADO PAGO ---
 def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
-    # Proteção: Se e-mail for vazio ou inválido, usa um genérico
+    # Proteção para e-mail inválido
     if not email_pagador or "@" not in str(email_pagador) or len(str(email_pagador)) < 5:
         email_pagador = "pagador@cantina.com"
         
@@ -173,9 +210,8 @@ def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
             payment_id = response['id']
             return payment_id, qr_code, qr_code_base64
         else:
-            # Mostra o erro na tela para ajudar a debugar
-            st.error(f"Erro ao criar Pix. Status: {result['status']}")
-            st.json(result) # Mostra detalhes técnicos do erro
+            st.error(f"Erro MP: {result.get('message', 'Erro desconhecido')}")
+            st.json(result) # Mostra o erro real na tela
             return None, None, None
     except Exception as e:
         st.error(f"Erro Python MP: {e}")
@@ -775,9 +811,10 @@ def menu_admin():
                     email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
                     if st.button("GERAR E ENVIAR"):
                         l, s = garantir_credenciais(id_sel, nome_sel)
-                        if email_sel:
-                            enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
-                        else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
+                        if l and s:
+                            if email_sel:
+                                enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
+                            else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
                 else: st.warning("Sem alunos.")
             elif st.session_state.get('acc_mode') == 'turma':
                 if not df_alunos.empty:
