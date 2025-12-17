@@ -336,8 +336,11 @@ class PDFA4(FPDF):
 
 # --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
-    if not dados: return
+    # CORREÇÃO DO VALUE ERROR: Verifica explicitamente se não é nulo/vazio
+    if dados is None: return
     if isinstance(dados, pd.DataFrame) and dados.empty: return
+    if isinstance(dados, dict) and not dados: return
+    
     try:
         pdf = PDFA4(titulo)
         if modo == "turmas": pdf.tabela_agrupada(dados)
@@ -346,8 +349,11 @@ def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     except Exception as e: st.error(f"Erro A4: {e}")
 
 def criar_botao_pdf_termico(dados, titulo, modo="simples"):
-    if not dados: return
+    # CORREÇÃO DO VALUE ERROR
+    if dados is None: return
     if isinstance(dados, pd.DataFrame) and dados.empty: return
+    if isinstance(dados, dict) and not dados: return
+
     try:
         pdf = PDFTermico(titulo, dados, modo); pdf.gerar_relatorio()
         st.download_button("🧾 BAIXAR PDF TÉRMICO (Bematech)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"cupom_{int(time.time())}.pdf", "application/pdf", type="primary")
