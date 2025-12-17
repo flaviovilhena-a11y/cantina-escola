@@ -30,6 +30,7 @@ CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com"
 DB_FILE = 'cantina.db'
 
 # --- CONFIGURAÇÃO MERCADO PAGO ---
+# ⚠️ IMPORTANTE: SUBSTITUA ABAIXO PELO SEU "ACCESS TOKEN" DE PRODUÇÃO
 MP_ACCESS_TOKEN = "SEU_ACCESS_TOKEN_AQUI" 
 sdk_mp = mercadopago.SDK(MP_ACCESS_TOKEN)
 
@@ -836,20 +837,19 @@ def menu_admin():
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
                     try:
-                        # Tenta ler com encoding CP850 (Legacy DOS/Windows)
+                        # LEITURA ROBUSTA: Tenta CP850 (Legacy) primeiro, depois outros
                         try:
-                            df=pd.read_csv(u,sep=None,engine='python',encoding='cp850')
+                            df=pd.read_csv(u,sep=';',engine='python',encoding='cp850')
                         except:
                             u.seek(0)
-                            try: df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
+                            try: df=pd.read_csv(u,sep=';',engine='python',encoding='latin1')
                             except: 
                                 u.seek(0)
-                                df=pd.read_csv(u,sep=None,engine='python',encoding='utf-8')
+                                df=pd.read_csv(u,sep=';',engine='python',encoding='utf-8')
                         
                         # Normaliza colunas
                         df.columns = [c.strip().upper() for c in df.columns]
                         
-                        # Helper para buscar colunas de forma flexível
                         def get_val(row, possibilities):
                             for p in possibilities:
                                 if p.upper() in row:
@@ -859,31 +859,26 @@ def menu_admin():
                         n_count, a_count, b = 0, 0, st.progress(0)
                         
                         for i, r in df.iterrows():
-                            # Limpeza de caracteres estranhos (Simão e 1o)
                             nome = limpar_texto(get_val(r, ['ALUNO', 'NOME', 'NOME COMPLETO']))
-                            
-                            # Tratamento especial de Turma/Série
                             turma_full = limpar_texto(get_val(r, ['TURMA', 'CLASSE']))
                             serie = ""
                             turma = ""
                             
-                            # Tenta separar "PRE I A" em "PRE I" e "A"
+                            # Separa Serie e Turma
                             if turma_full:
-                                parts = turma_full.rsplit(' ', 1) # Separa no último espaço
-                                if len(parts) == 2 and len(parts[1]) <= 2: # Ex: ["PRE I", "A"]
+                                parts = turma_full.rsplit(' ', 1) 
+                                if len(parts) == 2 and len(parts[1]) <= 2:
                                     serie = parts[0]
                                     turma = parts[1]
                                 else:
                                     turma = turma_full
                             
-                            # Se tiver coluna explícita de série, usa ela
                             serie_csv = limpar_texto(get_val(r, ['SERIE', 'SÉRIE', 'ANO']))
                             if serie_csv: serie = serie_csv
                             
                             email = get_val(r, ['EMAIL', 'E-MAIL', 'CORREIO'])
-                            if ";" in str(email): email = str(email).split(";")[0] # Pega só o primeiro email
+                            if ";" in str(email): email = str(email).split(";")[0] 
                             
-                            # Separação de Telefones
                             telefones_raw = str(get_val(r, ['TELEFONES', 'FONES', 'CONTATOS', 'CELULAR']))
                             tel1, tel2, tel3 = "", "", ""
                             if telefones_raw:
@@ -892,15 +887,21 @@ def menu_admin():
                                 if len(fones) >= 2: tel2 = fones[1].strip()
                                 if len(fones) >= 3: tel3 = fones[2].strip()
                             
-                            # Data de Nascimento
+                            # CONVERSÃO DE DATA: DD/MM/YYYY -> YYYY-MM-DD
                             nasc_raw = get_val(r, ['DATA DE NASCIMENTO', 'NASCIMENTO', 'DN'])
                             nasc_fmt = None
                             if nasc_raw:
                                 try:
-                                    nasc_fmt = str(nasc_raw).split(" ")[0] # Remove hora
-                                except: pass
+                                    # Pega só a parte da data (remove horas se houver)
+                                    data_limpa = str(nasc_raw).split(" ")[0]
+                                    # Tenta converter do formato brasileiro
+                                    dt_obj = datetime.strptime(data_limpa, "%d/%m/%Y")
+                                    # Converte para o formato do banco (ISO)
+                                    nasc_fmt = dt_obj.strftime("%Y-%m-%d")
+                                except: 
+                                    # Se falhar, tenta salvar como string mesmo
+                                    nasc_fmt = str(nasc_raw)
 
-                            # Saldo
                             saldo = 0.0
                             
                             if nome:
@@ -908,7 +909,7 @@ def menu_admin():
                             
                             b.progress((i+1)/len(df))
                             
-                        st.success("Importação concluída! Caracteres corrigidos.")
+                        st.success("Importação concluída! Dados atualizados.")
                     except Exception as e: st.error(f"Erro na importação: {e}")
                     
             elif act=="NOVO ALUNO":
