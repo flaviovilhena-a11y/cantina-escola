@@ -30,6 +30,9 @@ NOME_BENEFICIARIO = "FLAVIO SILVA"
 CIDADE_BENEFICIARIO = "MANAUS" 
 DB_FILE = 'cantina.db'
 
+# LISTA DE MODULOS DISPONIVEIS PARA ACESSO
+LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "RELATÓRIOS", "ACESSO & ADMIN"]
+
 def agora_manaus(): return datetime.now(FUSO_MANAUS)
 
 # --- BANCO DE DADOS ---
@@ -37,20 +40,30 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     c = conn.cursor()
     
-    # 1. Tabela de ADMINISTRAÇÃO
+    # 1. Tabela de ADMINISTRAÇÃO (Com Permissões)
     c.execute('''CREATE TABLE IF NOT EXISTS admins (
         id INTEGER PRIMARY KEY AUTOINCREMENT, 
         email TEXT UNIQUE, 
         senha TEXT, 
         nome TEXT, 
-        ativo INTEGER DEFAULT 1
+        ativo INTEGER DEFAULT 1,
+        permissoes TEXT
     )''')
     
-    # Cria usuário admin padrão se não existir
+    # Migração para quem já tem o banco criado (Adiciona coluna permissoes)
+    try: c.execute("ALTER TABLE admins ADD COLUMN permissoes TEXT")
+    except: pass
+    
+    # Cria usuário admin padrão se não existir (COM TODAS AS PERMISSÕES)
     c.execute("SELECT * FROM admins WHERE email='admin'")
     if not c.fetchone():
-        c.execute("INSERT INTO admins (email, senha, nome, ativo) VALUES (?, ?, ?, ?)", 
-                  ('admin', 'admin123', 'Super Admin', 1))
+        perms_str = ",".join(LISTA_PERMISSOES)
+        c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, ?, ?)", 
+                  ('admin', 'admin123', 'Super Admin', 1, perms_str))
+    else:
+        # Garante que o admin principal tenha acesso a tudo caso a coluna tenha sido criada agora
+        perms_str = ",".join(LISTA_PERMISSOES)
+        c.execute("UPDATE admins SET permissoes = ? WHERE email='admin' AND (permissoes IS NULL OR permissoes = '')", (perms_str,))
 
     # 2. Tabela Alunos
     c.execute('''CREATE TABLE IF NOT EXISTS alunos (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT, serie TEXT, turma TEXT, turno TEXT, nascimento TEXT, email TEXT, telefone1 TEXT, telefone2 TEXT, telefone3 TEXT, saldo REAL, login TEXT, senha TEXT)''')
@@ -79,12 +92,13 @@ def verificar_login(usuario, senha):
     c = conn.cursor()
     
     # 1. Tenta como ADMIN
-    c.execute("SELECT id, nome, ativo FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
+    c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
     admin = c.fetchone()
     if admin:
         conn.close()
         if admin[2] == 1: # Se ativo
-            return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1]}
+            perms = admin[3] if admin[3] else "" # Trata nulo
+            return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
         else:
             return {'tipo': 'bloqueado'}
             
@@ -172,7 +186,7 @@ class PDFA4(FPDF):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
     def tabela_simples(self, df):
         self.set_font('Arial', 'B', 9); cols = df.columns.tolist(); largeur = 190/len(cols)
-        for c in cols: 
+        for c in cols:
             align = 'R' if 'Valor' in c or 'Qtd' in c or 'Total' in c else 'L'
             self.cell(largeur, 8, str(c), 1, 0, 'C')
         self.ln(); self.set_font('Arial', '', 9)
@@ -180,8 +194,7 @@ class PDFA4(FPDF):
             for c in cols:
                 v = str(r[c]); align = 'L'
                 if 'Valor' in c or 'Total' in c: 
-                    if isinstance(r[c], (int, float)): v = f"R$ {r[c]:.2f}"
-                    align = 'R'
+                    if isinstance(r[c], (int, float)): v = f"R$ {r[c]:.2f}"; align = 'R'
                 elif 'Qtd' in c: align = 'R'
                 self.cell(largeur, 7, v[:40], 1, 0, align)
             self.ln()
@@ -200,11 +213,8 @@ class PDFA4(FPDF):
 
 # --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
-    vazio = False
-    if isinstance(dados, pd.DataFrame): 
-        if dados.empty: vazio=True
-    elif not dados: vazio=True
-    if vazio: return
+    if not dados: return
+    if isinstance(dados, pd.DataFrame) and dados.empty: return
     try:
         pdf = PDFA4(titulo)
         if modo == "turmas": pdf.tabela_agrupada(dados)
@@ -213,17 +223,14 @@ def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     except Exception as e: st.error(f"Erro A4: {e}")
 
 def criar_botao_pdf_termico(dados, titulo, modo="simples"):
-    vazio = False
-    if isinstance(dados, pd.DataFrame): 
-        if dados.empty: vazio=True
-    elif not dados: vazio=True
-    if vazio: return
+    if not dados: return
+    if isinstance(dados, pd.DataFrame) and dados.empty: return
     try:
         pdf = PDFTermico(titulo, dados, modo); pdf.gerar_relatorio()
         st.download_button("🧾 BAIXAR PDF TÉRMICO (Bematech)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"cupom_{int(time.time())}.pdf", "application/pdf", type="primary")
     except Exception as e: st.error(f"Erro Termico: {e}")
 
-# --- EMAIL E ALERTAS ---
+# --- EMAIL ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
     if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
@@ -294,17 +301,18 @@ def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
 # --- ADMIN CRUD ---
-def criar_admin(email, senha, nome):
+def criar_admin(email, senha, nome, permissoes):
     try:
         conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-        c.execute("INSERT INTO admins (email, senha, nome, ativo) VALUES (?, ?, ?, 1)", (email, senha, nome))
+        perms_str = ",".join(permissoes)
+        c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, 1, ?)", (email, senha, nome, perms_str))
         conn.commit(); conn.close()
         return True
     except: return False
 
 def get_all_admins():
     conn = sqlite3.connect(DB_FILE)
-    df = pd.read_sql_query("SELECT id, nome, email, ativo FROM admins", conn)
+    df = pd.read_sql_query("SELECT id, nome, email, ativo, permissoes FROM admins", conn)
     conn.close(); return df
 
 def toggle_admin_status(id_admin, novo_status):
@@ -441,6 +449,7 @@ if 'logado' not in st.session_state: st.session_state['logado'] = False
 if 'user_type' not in st.session_state: st.session_state['user_type'] = None
 if 'user_id' not in st.session_state: st.session_state['user_id'] = None
 if 'user_name' not in st.session_state: st.session_state['user_name'] = ""
+if 'user_perms' not in st.session_state: st.session_state['user_perms'] = []
 
 def login_screen():
     st.title("Cantina Peixinho Dourado")
@@ -461,6 +470,8 @@ def login_screen():
                     st.session_state['user_type'] = res['tipo']
                     st.session_state['user_id'] = res['id']
                     st.session_state['user_name'] = res['nome']
+                    if res['tipo'] == 'admin':
+                        st.session_state['user_perms'] = res.get('perms', [])
                     st.rerun()
             else:
                 st.error("❌ Usuário ou senha inválidos")
@@ -519,19 +530,30 @@ def menu_admin():
     st.sidebar.markdown("---")
     if st.sidebar.button("Sair"): st.session_state.clear(); st.rerun()
 
-    # Menu Principal Admin
-    c1,c2=st.columns(2); c3,c4=st.columns(2); c5,c6=st.columns(2)
-    if c1.button("CADASTRO",use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
-    if c2.button("COMPRAR",use_container_width=True): st.session_state.update(menu='comprar', modo=None)
-    if c3.button("SALDO",use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
-    if c4.button("RECARGA",use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
-    if c5.button("RELATÓRIOS",use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
-    if c6.button("🔑 ACESSO & ADMIN", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
+    # Menu Dinâmico baseado em Permissões
+    perms = st.session_state.get('user_perms', [])
+    
+    # Layout 3x2 colunas
+    c1, c2 = st.columns(2); c3, c4 = st.columns(2); c5, c6 = st.columns(2)
+    
+    # Renderiza apenas botões permitidos
+    if "CADASTRO" in perms:
+        if c1.button("CADASTRO", use_container_width=True): st.session_state.update(menu='cadastro', sub=None)
+    if "COMPRAR" in perms:
+        if c2.button("COMPRAR", use_container_width=True): st.session_state.update(menu='comprar', modo=None)
+    if "SALDO" in perms:
+        if c3.button("SALDO", use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
+    if "RECARGA" in perms:
+        if c4.button("RECARGA", use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
+    if "RELATÓRIOS" in perms:
+        if c5.button("RELATÓRIOS", use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
+    if "ACESSO & ADMIN" in perms:
+        if c6.button("🔑 ACESSO & ADMIN", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
 
     menu=st.session_state.get('menu')
 
     # --- CADASTRO ---
-    if menu=='cadastro':
+    if menu=='cadastro' and "CADASTRO" in perms:
         st.markdown("---"); c1,c2=st.columns(2)
         if c1.button("USUÁRIO",use_container_width=True): st.session_state['sub']='user'
         if c2.button("ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
@@ -607,7 +629,7 @@ def menu_admin():
                     if st.button("🧨 APAGAR TURMA"): cnt=delete_turma_db(t); st.success(f"{cnt} excluídos."); st.rerun()
 
     # --- RECARGA ---
-    if menu == 'recarga':
+    if menu == 'recarga' and "RECARGA" in perms:
         st.markdown("---"); st.subheader("💰 Recarga")
         c1,c2=st.columns(2)
         if c1.button("📝 RECEBIMENTO MANUAL",use_container_width=True): st.session_state['rec_mode']='manual'; st.session_state['pix_data']=None
@@ -643,7 +665,7 @@ def menu_admin():
         else: st.warning("Sem alunos.")
 
     # --- COMPRAR ---
-    if menu == 'comprar':
+    if menu == 'comprar' and "COMPRAR" in perms:
         st.markdown("---"); st.subheader("🛒 Venda")
         if not st.session_state.get('modo'):
             c1,c2=st.columns(2)
@@ -686,7 +708,7 @@ def menu_admin():
                         realizar_venda_form(st.session_state['aid_venda'], origin='turma')
 
     # --- HISTÓRICO ---
-    if menu == 'hist':
+    if menu == 'hist' and "SALDO" in perms:
         st.markdown("---"); st.subheader("📜 Extrato e Histórico")
         c1, c2 = st.columns(2)
         if c1.button("📜 EXTRATO", use_container_width=True): st.session_state['hist_mode'] = 'view'; st.session_state['hist_id'] = None
@@ -734,7 +756,7 @@ def menu_admin():
         else: st.warning("Sem alunos.")
 
     # --- RELATÓRIOS ---
-    if menu == 'relatorios':
+    if menu == 'relatorios' and "RELATÓRIOS" in perms:
         st.markdown("---"); st.subheader("📊 Relatórios")
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
@@ -792,7 +814,7 @@ def menu_admin():
             else: st.info("Nenhuma recarga.")
 
     # --- NOVO MENU: ACESSO & ADMIN ---
-    if menu == 'acesso':
+    if menu == 'acesso' and "ACESSO & ADMIN" in perms:
         st.markdown("---"); st.subheader("🔑 Gestão de Acessos")
         
         tab_alunos, tab_admins = st.tabs(["🎓 Alunos", "👔 Administradores"])
@@ -863,8 +885,12 @@ def menu_admin():
                 nome_adm = st.text_input("Nome")
                 email_adm = st.text_input("E-mail (Login)")
                 senha_adm = st.text_input("Senha", type="password")
+                
+                st.write("**Permissões de Acesso:**")
+                perms_selecionadas = st.multiselect("Selecione os módulos:", LISTA_PERMISSOES, default=LISTA_PERMISSOES)
+                
                 if st.form_submit_button("CRIAR ADMIN"):
-                    if criar_admin(email_adm, senha_adm, nome_adm): st.success("Criado com sucesso!")
+                    if criar_admin(email_adm, senha_adm, nome_adm, perms_selecionadas): st.success("Criado com sucesso!")
                     else: st.error("Erro: E-mail já existe.")
             
             st.subheader("Gerenciar Admins")
@@ -880,6 +906,8 @@ def menu_admin():
                         novo_status = 0 if row['ativo'] == 1 else 1
                         toggle_admin_status(row['id'], novo_status)
                         st.rerun()
+                with st.expander(f"Ver permissões de {row['nome']}"):
+                    st.write(row['permissoes'].replace(",", " | ") if row['permissoes'] else "Nenhuma")
 
 if st.session_state['logado']:
     if st.session_state['user_type'] == 'admin':
