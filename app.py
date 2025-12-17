@@ -30,7 +30,6 @@ CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com"
 DB_FILE = 'cantina.db'
 
 # --- CONFIGURAÇÃO MERCADO PAGO ---
-# ⚠️ IMPORTANTE: SUBSTITUA ABAIXO PELO SEU "ACCESS TOKEN" DE PRODUÇÃO
 MP_ACCESS_TOKEN = "SEU_ACCESS_TOKEN_AQUI" 
 sdk_mp = mercadopago.SDK(MP_ACCESS_TOKEN)
 
@@ -695,7 +694,8 @@ def limpar_texto(texto):
     if not isinstance(texto, str): return str(texto) if texto else ""
     t = texto.upper()
     t = t.replace('º', 'o').replace('°', 'o').replace('ª', 'a')
-    t = t.replace('1Ø', '1o') # Corrige erro de encoding especifico
+    t = t.replace('1Ø', '1o').replace('1ø', '1o') # Corrige especificamente o erro de encoding
+    t = t.replace('Ø', 'o').replace('ø', 'o') # Corrige o caractere solto
     return t.strip()
 
 # --- MENUS DE INTERFACE ---
@@ -836,14 +836,17 @@ def menu_admin():
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
                     try:
-                        # Tenta ler com diferentes encodings se falhar
+                        # Tenta ler com encoding CP850 (Legacy DOS/Windows)
                         try:
-                            df=pd.read_csv(u,sep=None,engine='python',encoding='utf-8')
+                            df=pd.read_csv(u,sep=None,engine='python',encoding='cp850')
                         except:
                             u.seek(0)
-                            df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
+                            try: df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
+                            except: 
+                                u.seek(0)
+                                df=pd.read_csv(u,sep=None,engine='python',encoding='utf-8')
                         
-                        # Normaliza colunas para evitar erros de case (Nome vs NOME)
+                        # Normaliza colunas
                         df.columns = [c.strip().upper() for c in df.columns]
                         
                         # Helper para buscar colunas de forma flexível
@@ -856,44 +859,56 @@ def menu_admin():
                         n_count, a_count, b = 0, 0, st.progress(0)
                         
                         for i, r in df.iterrows():
-                            # Mapeamento Flexível
-                            nome = get_val(r, ['ALUNO', 'NOME', 'NOME COMPLETO'])
-                            turma = limpar_texto(get_val(r, ['TURMA', 'CLASSE']))
-                            serie = limpar_texto(get_val(r, ['SERIE', 'SÉRIE', 'ANO']))
-                            turno = limpar_texto(get_val(r, ['TURNO', 'PERIODO']))
+                            # Limpeza de caracteres estranhos (Simão e 1o)
+                            nome = limpar_texto(get_val(r, ['ALUNO', 'NOME', 'NOME COMPLETO']))
+                            
+                            # Tratamento especial de Turma/Série
+                            turma_full = limpar_texto(get_val(r, ['TURMA', 'CLASSE']))
+                            serie = ""
+                            turma = ""
+                            
+                            # Tenta separar "PRE I A" em "PRE I" e "A"
+                            if turma_full:
+                                parts = turma_full.rsplit(' ', 1) # Separa no último espaço
+                                if len(parts) == 2 and len(parts[1]) <= 2: # Ex: ["PRE I", "A"]
+                                    serie = parts[0]
+                                    turma = parts[1]
+                                else:
+                                    turma = turma_full
+                            
+                            # Se tiver coluna explícita de série, usa ela
+                            serie_csv = limpar_texto(get_val(r, ['SERIE', 'SÉRIE', 'ANO']))
+                            if serie_csv: serie = serie_csv
+                            
                             email = get_val(r, ['EMAIL', 'E-MAIL', 'CORREIO'])
+                            if ";" in str(email): email = str(email).split(";")[0] # Pega só o primeiro email
                             
-                            tel1 = get_val(r, ['TELEFONE 1', 'TEL 1', 'TELEFONE', 'CELULAR', 'CONTATO'])
-                            tel2 = get_val(r, ['TELEFONE 2', 'TEL 2', 'CELULAR 2'])
-                            tel3 = get_val(r, ['TELEFONE 3', 'TEL 3'])
+                            # Separação de Telefones
+                            telefones_raw = str(get_val(r, ['TELEFONES', 'FONES', 'CONTATOS', 'CELULAR']))
+                            tel1, tel2, tel3 = "", "", ""
+                            if telefones_raw:
+                                fones = telefones_raw.split('/')
+                                if len(fones) >= 1: tel1 = fones[0].strip()
+                                if len(fones) >= 2: tel2 = fones[1].strip()
+                                if len(fones) >= 3: tel3 = fones[2].strip()
                             
-                            # Data de Nascimento (Tenta formatar)
-                            nasc_raw = get_val(r, ['NASCIMENTO', 'DATA DE NASCIMENTO', 'DN', 'NASC'])
+                            # Data de Nascimento
+                            nasc_raw = get_val(r, ['DATA DE NASCIMENTO', 'NASCIMENTO', 'DN'])
                             nasc_fmt = None
                             if nasc_raw:
                                 try:
-                                    # Se vier como datetime do pandas
-                                    if isinstance(nasc_raw, (pd.Timestamp, datetime, date)):
-                                        nasc_fmt = nasc_raw.strftime("%d/%m/%Y")
-                                    else:
-                                        nasc_fmt = str(nasc_raw).split(" ")[0] # Remove hora se tiver
-                                except: nasc_fmt = str(nasc_raw)
+                                    nasc_fmt = str(nasc_raw).split(" ")[0] # Remove hora
+                                except: pass
 
-                            # Tratamento de Saldo
-                            saldo_raw = get_val(r, ['SALDO', 'CREDITO'])
-                            try:
-                                if isinstance(saldo_raw, str):
-                                    saldo = float(saldo_raw.replace('R$', '').replace(',', '.'))
-                                else:
-                                    saldo = float(saldo_raw) if saldo_raw else 0.0
-                            except: saldo = 0.0
+                            # Saldo
+                            saldo = 0.0
                             
                             if nome:
-                                upsert_aluno(str(nome), str(serie), str(turma), str(turno), nasc_fmt, str(email), str(tel1), str(tel2), str(tel3), saldo)
+                                upsert_aluno(nome, serie, turma, "", nasc_fmt, email, tel1, tel2, tel3, saldo)
                             
                             b.progress((i+1)/len(df))
                             
-                        st.success("Importação concluída! Dados atualizados.")
+                        st.success("Importação concluída! Caracteres corrigidos.")
                     except Exception as e: st.error(f"Erro na importação: {e}")
                     
             elif act=="NOVO ALUNO":
