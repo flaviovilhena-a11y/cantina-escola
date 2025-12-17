@@ -11,7 +11,7 @@ import streamlit.components.v1 as components
 import random
 import string
 import pytz
-import mercadopago  # <--- NOVA IMPORTAÇÃO
+import mercadopago  # <--- BIBLIOTECA DO MERCADO PAGO
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
@@ -30,7 +30,7 @@ CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com"
 DB_FILE = 'cantina.db'
 
 # --- CONFIGURAÇÃO MERCADO PAGO ---
-# ⚠️ IMPORTANTE: SUBSTITUA PELO SEU ACCESS TOKEN DE PRODUÇÃO
+# ⚠️ IMPORTANTE: SUBSTITUA ABAIXO PELO SEU "ACCESS TOKEN" DE PRODUÇÃO (COMEÇA COM APP_USR- OU TEST-)
 MP_ACCESS_TOKEN = "SEU_ACCESS_TOKEN_AQUI" 
 sdk_mp = mercadopago.SDK(MP_ACCESS_TOKEN)
 
@@ -63,7 +63,7 @@ def init_db():
     if not c.fetchone():
         c.execute("INSERT INTO admins (email, senha, nome, ativo, permissoes) VALUES (?, ?, ?, ?, ?)", ('admin', 'admin123', 'Super Admin', 1, perms_str))
     else:
-        # Atualiza permissões para garantir acesso ao novo módulo
+        # Atualiza permissões
         c.execute("UPDATE admins SET permissoes = ? WHERE email='admin'", (perms_str,))
 
     # 2. Tabela Alunos
@@ -117,9 +117,8 @@ def verificar_login(usuario, senha):
             if admin[2] == 1: 
                 perms = admin[3] if admin[3] else ""
                 lista_perms = perms.split(',')
-                # Compatibilidade
                 if "RELATÓRIOS" in lista_perms: lista_perms.append("RELATÓRIOS DE VENDAS")
-                if "SALDO" in lista_perms: lista_perms.append("CANCELAR VENDA") # Garante acesso para quem já tinha saldo
+                if "SALDO" in lista_perms: lista_perms.append("CANCELAR VENDA") 
                 return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': lista_perms}
             else: return {'tipo': 'bloqueado'}
     except: pass
@@ -149,8 +148,12 @@ def garantir_credenciais(aluno_id, nome_aluno):
     except: return None, None
     finally: conn.close()
 
-# --- FUNÇÕES MERCADO PAGO (NOVO) ---
+# --- FUNÇÕES MERCADO PAGO (ROBUSTAS) ---
 def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
+    # Proteção: Se e-mail for vazio ou inválido, usa um genérico
+    if not email_pagador or "@" not in str(email_pagador) or len(str(email_pagador)) < 5:
+        email_pagador = "pagador@cantina.com"
+        
     payment_data = {
         "transaction_amount": float(valor),
         "description": f"Recarga Cantina - {nome_aluno}",
@@ -169,8 +172,13 @@ def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
             qr_code_base64 = response['point_of_interaction']['transaction_data']['qr_code_base64']
             payment_id = response['id']
             return payment_id, qr_code, qr_code_base64
+        else:
+            # Mostra o erro na tela para ajudar a debugar
+            st.error(f"Erro ao criar Pix. Status: {result['status']}")
+            st.json(result) # Mostra detalhes técnicos do erro
+            return None, None, None
     except Exception as e:
-        st.error(f"Erro MP: {e}")
+        st.error(f"Erro Python MP: {e}")
     return None, None, None
 
 def verificar_status_pagamento(payment_id):
