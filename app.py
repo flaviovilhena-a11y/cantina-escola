@@ -252,50 +252,7 @@ def verificar_status_pagamento(payment_id):
         pass
     return False
 
-# --- PDF ---
-class PDFTermico(FPDF):
-    def __init__(self, titulo, dados, modo="simples"):
-        linhas = 0
-        if modo == "turmas":
-            for df in dados.values(): linhas += len(df) + 4 
-        else: linhas = len(dados)
-        altura_estimada = 40 + (linhas * 6)
-        super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
-        self.titulo = titulo; self.dados = dados; self.modo = modo; self.set_margins(2, 2, 2); self.add_page()
-    def header(self):
-        self.set_font('Courier', 'B', 10); self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
-        self.set_font('Courier', '', 8); self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
-        self.cell(0, 4, f'{agora_manaus().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
-        self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
-        self.set_font('Courier', 'B', 9); self.multi_cell(0, 4, self.titulo.upper(), 0, 'C'); self.ln(2)
-    def gerar_relatorio(self):
-        if self.modo == "turmas": self._gerar_por_turma()
-        else: self._gerar_simples()
-    def _gerar_simples(self):
-        self.set_font('Courier', 'B', 7); cols = self.dados.columns.tolist(); largeur = 76/len(cols)
-        for c in cols:
-            align = 'R' if 'Qtd' in str(c) or 'Valor' in str(c) else 'L'
-            self.cell(largeur, 4, str(c)[:15], 0, 0, align)
-        self.ln(); self.set_font('Courier', '', 7)
-        for i, r in self.dados.iterrows():
-            for c in cols:
-                v = str(r[c]); align = 'L'
-                if 'Valor' in c or 'Total' in c: 
-                    if isinstance(r[c], (int, float)): v = f"{r[c]:.2f}"; align = 'R'
-                elif 'Qtd' in c: align = 'R'
-                self.cell(largeur, 4, v[:20], 0, 0, align)
-            self.ln()
-        self.ln(4); self.cell(0, 0, border="T", ln=1)
-    def _gerar_por_turma(self):
-        for t, df in self.dados.items():
-            self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {t}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
-            self.set_font('Courier', 'B', 7); self.cell(60, 4, "PRODUTO", 0, 0, 'L'); self.cell(16, 4, "QTD", 0, 1, 'R')
-            self.set_font('Courier', '', 7)
-            for i, r in df.iterrows():
-                if str(r['Produto']) == "TOTAL TURMA": continue
-                self.cell(60, 4, str(r['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(r['Qtd']), 0, 1, 'R')
-            self.ln(2); self.cell(0, 0, border="B", ln=1); self.ln(2)
-
+# --- PDF A4 (Modificado para lista vertical) ---
 class PDFA4(FPDF):
     def __init__(self, titulo):
         super().__init__(orientation='P', unit='mm', format='A4')
@@ -307,21 +264,72 @@ class PDFA4(FPDF):
         self.ln(5); self.line(10, 35, 200, 35); self.ln(5)
     def footer(self):
         self.set_y(-15); self.set_font('Arial', 'I', 8); self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
+    
     def tabela_simples(self, df):
-        self.set_font('Arial', 'B', 9); cols = df.columns.tolist(); largeur = 190/len(cols)
-        for c in cols: 
-            align = 'R' if 'Valor' in c or 'Qtd' in c or 'Total' in c else 'L'
-            self.cell(largeur, 8, str(c), 1, 0, 'C')
-        self.ln(); self.set_font('Arial', '', 9)
+        # Configuração das Colunas
+        self.set_font('Arial', 'B', 9)
+        # Larguras fixas para melhor controle
+        w_data = 30
+        w_tipo = 25
+        w_valor = 30
+        w_prod = 105 # O restante
+        
+        self.cell(w_data, 8, "DATA", 1, 0, 'C')
+        self.cell(w_tipo, 8, "TIPO", 1, 0, 'C')
+        self.cell(w_prod, 8, "PRODUTOS / HISTÓRICO", 1, 0, 'L')
+        self.cell(w_valor, 8, "VALOR", 1, 1, 'R')
+        
+        self.set_font('Arial', '', 9)
+        
         for i, r in df.iterrows():
-            for c in cols:
-                v = str(r[c]); align = 'L'
-                if 'Valor' in c or 'Total' in c: 
-                    if isinstance(r[c], (int, float)): v = f"R$ {r[c]:.2f}"; align = 'R'
-                elif 'Qtd' in c: align = 'R'
-                self.cell(largeur, 7, v[:40], 1, 0, align)
-            self.ln()
+            # Prepara os dados
+            data_str = str(r['Data'])
+            tipo_str = str(r['Tipo'])
+            
+            val_raw = r['Valor']
+            if isinstance(val_raw, (int, float)):
+                val_str = f"R$ {val_raw:.2f}"
+            else: val_str = str(val_raw)
+            
+            # Divide os produtos pelas quebras de linha
+            prod_raw = str(r['Produtos/Histórico'])
+            linhas_prod = prod_raw.split('\n')
+            
+            # Se não tiver produtos (ex: recarga sem obs), garante pelo menos uma linha
+            if not linhas_prod: linhas_prod = [""]
+            
+            # Altura da célula base
+            h_base = 7
+            
+            # Loop para desenhar as linhas de produtos "uma embaixo da outra"
+            # mas mantendo Data/Tipo/Valor agrupados visualmente
+            for idx, linha_texto in enumerate(linhas_prod):
+                # Bordas: 
+                # 'L' = Esquerda, 'R' = Direita, 'T' = Topo, 'B' = Baixo
+                
+                # Se for a primeira linha do bloco, imprime Data, Tipo e Valor
+                # E desenha a borda superior
+                if idx == 0:
+                    borda_lat = 'LRT' if len(linhas_prod) > 1 else '1' # 1 = todas
+                    borda_meio = 'LRT' if len(linhas_prod) > 1 else '1'
+                    
+                    self.cell(w_data, h_base, data_str, borda_lat, 0, 'C')
+                    self.cell(w_tipo, h_base, tipo_str, borda_lat, 0, 'C')
+                    self.cell(w_prod, h_base, linha_texto[:60], borda_meio, 0, 'L')
+                    self.cell(w_valor, h_base, val_str, borda_lat, 1, 'R')
+                
+                # Se for uma linha do meio ou fim (só produto)
+                else:
+                    # Borda: Se for a última, fecha embaixo ('B'). Se não, só laterais ('LR')
+                    borda = 'LRB' if idx == len(linhas_prod) - 1 else 'LR'
+                    
+                    self.cell(w_data, h_base, "", borda, 0, 'C') # Vazio
+                    self.cell(w_tipo, h_base, "", borda, 0, 'C') # Vazio
+                    self.cell(w_prod, h_base, linha_texto[:60], borda, 0, 'L')
+                    self.cell(w_valor, h_base, "", borda, 1, 'R') # Vazio
+
     def tabela_agrupada(self, dados):
+        # Mantida a original para relatorios de turma
         for t, df in dados.items():
             self.set_font('Arial', 'B', 11); self.cell(0, 10, f"TURMA: {t}", 0, 1, 'L')
             self.set_font('Arial', 'B', 9); self.cell(100, 7, "PRODUTO", 1, 0, 'L'); self.cell(30, 7, "QTD", 1, 0, 'C'); self.cell(60, 7, "TOTAL (R$)", 1, 1, 'C')
@@ -334,9 +342,76 @@ class PDFA4(FPDF):
                     self.set_font('Arial','',9); self.cell(100,7,p,1,0,'L'); self.cell(30,7,q,1,0,'C'); self.cell(60,7,tot,1,1,'R')
             self.ln(5)
 
+# --- PDF TERMICO (Modificado para lista vertical) ---
+class PDFTermico(FPDF):
+    def __init__(self, titulo, dados, modo="simples"):
+        linhas = 0
+        if modo == "turmas":
+            for df in dados.values(): linhas += len(df) + 4 
+        else: 
+            # Estima altura baseada na quantidade de QUEBRAS DE LINHA nos produtos
+            for i, r in dados.iterrows():
+                p_str = str(r.get('Produtos/Histórico', ''))
+                linhas += p_str.count('\n') + 2 # +2 margem
+            
+        altura_estimada = 40 + (linhas * 5)
+        super().__init__(orientation='P', unit='mm', format=(80, altura_estimada))
+        self.titulo = titulo; self.dados = dados; self.modo = modo; self.set_margins(2, 2, 2); self.add_page()
+    def header(self):
+        self.set_font('Courier', 'B', 10); self.cell(0, 5, 'CANTINA PEIXINHO DOURADO', 0, 1, 'C')
+        self.set_font('Courier', '', 8); self.cell(0, 4, 'Relatorio Gerencial', 0, 1, 'C')
+        self.cell(0, 4, f'{agora_manaus().strftime("%d/%m/%Y %H:%M")}', 0, 1, 'C')
+        self.ln(2); self.cell(0, 0, border="T", ln=1); self.ln(2)
+        self.set_font('Courier', 'B', 9); self.multi_cell(0, 4, self.titulo.upper(), 0, 'C'); self.ln(2)
+    def gerar_relatorio(self):
+        if self.modo == "turmas": self._gerar_por_turma()
+        else: self._gerar_simples()
+    
+    def _gerar_simples(self):
+        self.set_font('Courier', 'B', 8)
+        # Cabeçalho manual
+        self.cell(22, 4, "DATA", 0, 0, 'L')
+        self.cell(34, 4, "HISTORICO", 0, 0, 'L')
+        self.cell(20, 4, "VALOR", 0, 1, 'R')
+        self.cell(0, 0, border="T", ln=1)
+        self.ln(1)
+        
+        self.set_font('Courier', '', 8)
+        
+        for i, r in self.dados.iterrows():
+            data_val = str(r['Data'])[:11] # Corta ano se precisar
+            val_raw = r['Valor']
+            val_str = f"{val_raw:.2f}" if isinstance(val_raw, (float, int)) else str(val_raw)
+            
+            # Produtos
+            prods = str(r.get('Produtos/Histórico', '')).split('\n')
+            
+            # Primeira linha: Data | Primeiro Item | Valor
+            item_1 = prods[0] if prods else ""
+            self.cell(22, 4, data_val, 0, 0, 'L')
+            self.cell(34, 4, item_1[:18], 0, 0, 'L')
+            self.cell(20, 4, val_str, 0, 1, 'R')
+            
+            # Linhas seguintes (só o item, indentado)
+            if len(prods) > 1:
+                for item_extra in prods[1:]:
+                    self.cell(22, 4, "", 0, 0, 'L') # Espaço da data
+                    self.cell(54, 4, item_extra[:30], 0, 1, 'L')
+            
+            self.ln(1) # Espaço entre transações
+
+    def _gerar_por_turma(self):
+        for t, df in self.dados.items():
+            self.set_font('Courier', 'B', 9); self.cell(0, 5, f"TURMA: {t}", 0, 1, 'L'); self.cell(0, 0, border="T", ln=1)
+            self.set_font('Courier', 'B', 7); self.cell(60, 4, "PRODUTO", 0, 0, 'L'); self.cell(16, 4, "QTD", 0, 1, 'R')
+            self.set_font('Courier', '', 7)
+            for i, r in df.iterrows():
+                if str(r['Produto']) == "TOTAL TURMA": continue
+                self.cell(60, 4, str(r['Produto'])[:30], 0, 0, 'L'); self.cell(16, 4, str(r['Qtd']), 0, 1, 'R')
+            self.ln(2); self.cell(0, 0, border="B", ln=1); self.ln(2)
+
 # --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
-    # CORREÇÃO DO VALUE ERROR: Verifica explicitamente se não é nulo/vazio
     if dados is None: return
     if isinstance(dados, pd.DataFrame) and dados.empty: return
     if isinstance(dados, dict) and not dados: return
@@ -349,7 +424,6 @@ def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     except Exception as e: st.error(f"Erro A4: {e}")
 
 def criar_botao_pdf_termico(dados, titulo, modo="simples"):
-    # CORREÇÃO DO VALUE ERROR
     if dados is None: return
     if isinstance(dados, pd.DataFrame) and dados.empty: return
     if isinstance(dados, dict) and not dados: return
@@ -509,6 +583,7 @@ def get_extrato_aluno(aid, filtro):
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
     c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
     dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); dc = calcular_data_corte(filtro); ext = []
+    
     for i in v: 
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S"); dt_corte_naive = dc.replace(tzinfo=None) if dc else None
         if not dt_corte_naive or dt>=dt_corte_naive: 
@@ -517,11 +592,19 @@ def get_extrato_aluno(aid, filtro):
                 for item in itens_str.split(", "):
                     try: qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_formatados.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
                     except: itens_formatados.append(item)
-            ext.append({"Data":dt,"Tipo":"COMPRA","Produtos/Histórico":", ".join(itens_formatados),"Valor":-i[2]})
+            
+            # AQUI: Usa \n para quebra de linha visual na tabela
+            produtos_display = "\n".join(itens_formatados)
+            ext.append({"Data":dt,"Tipo":"COMPRA","Produtos/Histórico":produtos_display,"Valor":-i[2]})
+            
     for i in r:
         dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S"); dt_corte_naive = dc.replace(tzinfo=None) if dc else None
         if not dt_corte_naive or dt>=dt_corte_naive: ext.append({"Data":dt,"Tipo":"RECARGA","Produtos/Histórico":f"Via {i[2]}","Valor":i[1]})
-    if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
+        
+    if ext: 
+        df=pd.DataFrame(ext).sort_values("Data",ascending=False)
+        df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M"))
+        return df
     return pd.DataFrame()
 
 def get_vendas_cancelar(aid, filtro):
@@ -755,7 +838,20 @@ def menu_aluno():
         with tab1:
             filt = st.selectbox("Período", ["HOJE", "7 DIAS", "30 DIAS", "TODOS"])
             df_ext = get_extrato_aluno(aluno['id'], filt)
-            if not df_ext.empty: st.dataframe(df_ext, hide_index=True, use_container_width=True)
+            if not df_ext.empty: 
+                # Column Config para quebra de linha visual na tabela web
+                st.dataframe(
+                    df_ext, 
+                    column_config={
+                        "Valor": st.column_config.NumberColumn(format="R$ %.2f"),
+                        "Produtos/Histórico": st.column_config.TextColumn(width="large")
+                    },
+                    hide_index=True, 
+                    use_container_width=True
+                )
+                c_p1, c_p2 = st.columns(2)
+                criar_botao_pdf_a4(df_ext, f"EXTRATO: {al['nome']}")
+                criar_botao_pdf_termico(df_ext, f"EXTRATO: {al['nome']}")
             else: st.info("Nenhuma movimentação no período.")
         with tab2: st.write("Para recarregar, mostre este QR Code no caixa ou faça um Pix e envie o comprovante."); st.info(f"Chave Pix: {CHAVE_PIX_ESCOLA}")
         with tab3: 
