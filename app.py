@@ -31,7 +31,7 @@ CIDADE_BENEFICIARIO = "MANAUS"
 DB_FILE = 'cantina.db'
 
 # LISTA ATUALIZADA DE MODULOS
-LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "RELATÓRIOS", "ENVIAR ACESSOS", "ADMINISTRADORES"]
+LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "RELATÓRIOS DE VENDAS", "RELATÓRIO DE RECARGAS", "ENVIAR ACESSOS", "ADMINISTRADORES"]
 
 def agora_manaus(): return datetime.now(FUSO_MANAUS)
 
@@ -79,11 +79,15 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS transacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, itens TEXT, valor_total REAL, data_hora TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS recargas (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, valor REAL, data_hora TEXT, metodo_pagamento TEXT, nsu TEXT)''')
     
+    # NOVAS COLUNAS RECARGAS
     if not check_column_exists(c, 'recargas', 'metodo_pagamento'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT")
         except: pass
     if not check_column_exists(c, 'recargas', 'nsu'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
+        except: pass
+    if not check_column_exists(c, 'recargas', 'realizado_por'): # <--- NOVA COLUNA PARA AUDITORIA
+        try: c.execute("ALTER TABLE recargas ADD COLUMN realizado_por TEXT")
         except: pass
     
     conn.commit(); conn.close()
@@ -106,7 +110,10 @@ def verificar_login(usuario, senha):
             conn.close()
             if admin[2] == 1: 
                 perms = admin[3] if admin[3] else ""
-                return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
+                # Compatibilidade
+                lista_perms = perms.split(',')
+                if "RELATÓRIOS" in lista_perms: lista_perms.append("RELATÓRIOS DE VENDAS")
+                return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': lista_perms}
             else: return {'tipo': 'bloqueado'}
     except: pass
 
@@ -217,6 +224,7 @@ class PDFA4(FPDF):
                     self.set_font('Arial','',9); self.cell(100,7,p,1,0,'L'); self.cell(30,7,q,1,0,'C'); self.cell(60,7,tot,1,1,'R')
             self.ln(5)
 
+# --- HELPERS DOWNLOAD ---
 def criar_botao_pdf_a4(dados, titulo, modo="simples"):
     if not dados: return
     if isinstance(dados, pd.DataFrame) and dados.empty: return
@@ -235,7 +243,7 @@ def criar_botao_pdf_termico(dados, titulo, modo="simples"):
         st.download_button("🧾 BAIXAR PDF TÉRMICO (Bematech)", pdf.output(dest='S').encode('latin-1', 'ignore'), f"cupom_{int(time.time())}.pdf", "application/pdf", type="primary")
     except Exception as e: st.error(f"Erro Termico: {e}")
 
-# --- EMAIL ---
+# --- EMAIL E ALERTAS ---
 def enviar_email_brevo_thread(email_destino, nome_aluno, assunto, mensagem_html):
     if not email_destino or "@" not in str(email_destino): return 
     url = "https://api.brevo.com/v3/smtp/email"
@@ -290,15 +298,19 @@ def get_historico_preferencias(aid):
                 except: pass
     return cnt
 
-# --- DB ESCRITA ---
+# --- DB ESCRITA (COM REGISTRO DO USUÁRIO LOGADO) ---
 def update_saldo_aluno(id,s): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s,id)); conn.commit(); conn.close()
 def registrar_venda(aid,i,v): 
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); dm=agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
     c.execute("INSERT INTO transacoes (aluno_id,itens,valor_total,data_hora) VALUES (?,?,?,?)",(aid,i,v,dm)); conn.commit(); conn.close()
-def registrar_recarga(aid,v,m,n=None): 
-    conn=sqlite3.connect(DB_FILE); c=conn.cursor(); dm=agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
-    c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu) VALUES (?,?,?,?,?)",(aid,v,dm,m,n))
-    c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
+
+def registrar_recarga(aid, v, m, usuario_logado, nsu=None): 
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    dm = agora_manaus().strftime("%d/%m/%Y %H:%M:%S")
+    c.execute("INSERT INTO recargas (aluno_id,valor,data_hora,metodo_pagamento,nsu,realizado_por) VALUES (?,?,?,?,?,?)",(aid, v, dm, m, nsu, usuario_logado))
+    c.execute("SELECT saldo FROM alunos WHERE id=?",(aid,)); s=c.fetchone()[0]
+    c.execute("UPDATE alunos SET saldo=? WHERE id=?",(s+v,aid)); conn.commit(); conn.close()
+
 def cancelar_venda_db(tid, aid, valor):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM transacoes WHERE id = ?", (tid,)); c.execute("SELECT saldo FROM alunos WHERE id = ?", (aid,)); s=c.fetchone()[0]; c.execute("UPDATE alunos SET saldo = ? WHERE id = ?", (s + valor, aid)); conn.commit(); conn.close()
 
@@ -313,6 +325,132 @@ def criar_admin(email, senha, nome, permissoes):
 def get_all_admins(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT id, nome, email, ativo, permissoes FROM admins", conn); conn.close(); return df
 def toggle_admin_status(id_admin, novo_status):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("UPDATE admins SET ativo = ? WHERE id = ?", (novo_status, id_admin)); conn.commit(); conn.close()
+
+# --- HELPER FILTROS ---
+def calcular_data_corte(filtro):
+    hoje = agora_manaus().replace(hour=0, minute=0, second=0, microsecond=0)
+    if filtro == "HOJE": return hoje
+    elif filtro == "ÚLTIMOS 7 DIAS": return hoje - timedelta(days=7)
+    elif filtro == "ÚLTIMOS 15 DIAS": return hoje - timedelta(days=15)
+    elif filtro == "ÚLTIMOS 30 DIAS": return hoje - timedelta(days=30)
+    return None
+def validar_horario_turno(data_hora_str, turno):
+    if turno == "DIA INTEIRO": return True
+    try:
+        dt = datetime.strptime(data_hora_str, "%d/%m/%Y %H:%M:%S")
+        h = dt.hour; m = dt.minute
+        if turno == "MATUTINO": return (h>=6 and (h<11 or (h==11 and m<=45)))
+        elif turno == "VESPERTINO": return (h>=13 and h<=18)
+    except: pass
+    return False
+
+# --- RELATORIOS ---
+def get_extrato_aluno(aid, filtro):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
+    c.execute("SELECT data_hora,valor,metodo_pagamento FROM recargas WHERE aluno_id=?",(aid,)); r=c.fetchall()
+    dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); preco_map=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); dc = calcular_data_corte(filtro); ext = []
+    for i in v: 
+        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S"); dt_corte_naive = dc.replace(tzinfo=None) if dc else None
+        if not dt_corte_naive or dt>=dt_corte_naive: 
+            itens_str = i[1]; itens_formatados = []
+            if itens_str:
+                for item in itens_str.split(", "):
+                    try: qtd, nome = item.split("x "); p_unit = preco_map.get(nome, 0.0); itens_formatados.append(f"{qtd}x {nome} (R$ {p_unit:.2f})")
+                    except: itens_formatados.append(item)
+            ext.append({"Data":dt,"Tipo":"COMPRA","Produtos/Histórico":", ".join(itens_formatados),"Valor":-i[2]})
+    for i in r:
+        dt=datetime.strptime(i[0],"%d/%m/%Y %H:%M:%S"); dt_corte_naive = dc.replace(tzinfo=None) if dc else None
+        if not dt_corte_naive or dt>=dt_corte_naive: ext.append({"Data":dt,"Tipo":"RECARGA","Produtos/Histórico":f"Via {i[2]}","Valor":i[1]})
+    if ext: df=pd.DataFrame(ext).sort_values("Data",ascending=False); df['Data']=df['Data'].apply(lambda x:x.strftime("%d/%m %H:%M")); return df
+    return pd.DataFrame()
+
+def get_vendas_cancelar(aid, filtro):
+    conn=sqlite3.connect(DB_FILE); dc = calcular_data_corte(filtro)
+    try:
+        df = pd.read_sql_query("SELECT id, data_hora, itens, valor_total FROM transacoes WHERE aluno_id = ? ORDER BY id DESC", conn, params=(aid,))
+        if not df.empty and dc:
+            df['dt_obj'] = pd.to_datetime(df['data_hora'], format="%d/%m/%Y %H:%M:%S"); dc_naive = dc.replace(tzinfo=None); df = df[df['dt_obj'] >= dc_naive]
+    except: df = pd.DataFrame()
+    conn.close(); return df
+
+def get_relatorio_produtos(df_data, turno="DIA INTEIRO"):
+    conn=sqlite3.connect(DB_FILE); c=conn.cursor()
+    c.execute("SELECT itens, data_hora FROM transacoes WHERE data_hora LIKE ?",(f"{df_data}%",)); rs=c.fetchall()
+    dfp=pd.read_sql_query("SELECT nome,valor FROM alimentos",conn); pm=dict(zip(dfp['nome'],dfp['valor'])); conn.close(); qg=Counter()
+    for itens, dh in rs:
+        if not validar_horario_turno(dh, turno): continue
+        if itens: 
+            for i in itens.split(", "):
+                try: qg[i.split("x ")[1]]+=int(i.split("x ")[0])
+                except: pass
+    dd=[]; td=0.0
+    for n,q in qg.items(): v=pm.get(n,0.0)*q; td+=v; dd.append({"Produto":n,"Qtd Vendida":q,"Valor Total (R$)":v})
+    if dd: return pd.DataFrame(dd).sort_values("Qtd Vendida",ascending=False),td
+    return pd.DataFrame(),0.0
+
+def get_relatorio_produtos_por_turma(data_filtro, turno="DIA INTEIRO"):
+    conn = sqlite3.connect(DB_FILE)
+    query = '''SELECT a.turma, t.itens, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id = a.id WHERE t.data_hora LIKE ? ORDER BY a.turma ASC'''
+    try: rows = conn.execute(query, (f"{data_filtro}%",)).fetchall(); dfp = pd.read_sql_query("SELECT nome,valor FROM alimentos", conn); preco_map = dict(zip(dfp['nome'], dfp['valor']))
+    except: return {}
+    conn.close(); dados_turmas = {}
+    for turma, itens, dh in rows:
+        if not validar_horario_turno(dh, turno): continue
+        if not turma: turma = "SEM TURMA"
+        if turma not in dados_turmas: dados_turmas[turma] = Counter()
+        if itens:
+            for item in itens.split(", "):
+                try: parts = item.split("x "); qtd = int(parts[0]); nome = parts[1]; dados_turmas[turma][nome] += qtd
+                except: pass
+    resultados = {}
+    for turma, contador in dados_turmas.items():
+        lista_itens = []; total_turma = 0.0
+        for nome, qtd in contador.items():
+            valor_item = preco_map.get(nome, 0.0) * qtd; total_turma += valor_item; lista_itens.append({"Produto": nome, "Qtd": qtd, "Total": valor_item})
+        if lista_itens:
+            df = pd.DataFrame(lista_itens).sort_values("Produto")
+            df = pd.concat([df, pd.DataFrame([{"Produto":"TOTAL TURMA", "Qtd":"", "Total": total_turma}])], ignore_index=True)
+            resultados[turma] = df
+    return resultados
+
+def get_relatorio_recargas_detalhado(filtro_tempo):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        dc = calcular_data_corte(filtro_tempo)
+        # Seleciona nova coluna realizado_por
+        query = """
+            SELECT r.data_hora, a.nome, r.valor, r.metodo_pagamento, r.realizado_por
+            FROM recargas r 
+            JOIN alunos a ON r.aluno_id = a.id 
+            ORDER BY r.id DESC
+        """
+        rows = conn.execute(query).fetchall()
+        lista_final = []
+        for dh, nome_aluno, valor, metodo, realizado_por in rows:
+            dt_obj = datetime.strptime(dh, "%d/%m/%Y %H:%M:%S")
+            if dc:
+                dc_naive = dc.replace(tzinfo=None)
+                if dt_obj < dc_naive: continue
+            
+            # LÓGICA DE EXIBIÇÃO DE ORIGEM
+            if metodo == "PIX (QR)":
+                origem = "BANCO (Pix Automático)"
+            else:
+                # Mostra quem fez se for manual
+                quem = realizado_por if realizado_por else "Sistema"
+                origem = f"MANUAL ({nome_aluno}) | Por: {quem}"
+            
+            lista_final.append({
+                "Data": dt_obj.strftime("%d/%m %H:%M"),
+                "Origem": origem,
+                "Método": metodo,
+                "Valor": valor
+            })
+        if lista_final: return pd.DataFrame(lista_final)
+        return pd.DataFrame()
+    except: return pd.DataFrame()
+    finally: conn.close()
 
 # --- CRUD ALIMENTOS ---
 def add_alimento_db(n,v,t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute('INSERT INTO alimentos (nome,valor,tipo) VALUES (?,?,?)',(n,v,t)); conn.commit(); conn.close()
@@ -438,11 +576,13 @@ def menu_admin():
         if c3.button("SALDO", use_container_width=True): st.session_state.update(menu='hist', hist_id=None, hist_mode='view')
     if "RECARGA" in perms:
         if c4.button("RECARGA", use_container_width=True): st.session_state.update(menu='recarga', rec_mode=None, pix_data=None)
-    if "RELATÓRIOS" in perms:
-        if c5.button("RELATÓRIOS", use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
-    if "ENVIAR ACESSOS" in perms:
-        if c6.button("ENVIAR ACESSOS", use_container_width=True): st.session_state.update(menu='enviar_acessos', acc_mode=None)
     
+    if "RELATÓRIOS DE VENDAS" in perms:
+        if c5.button("RELATÓRIOS DE VENDAS", use_container_width=True): st.session_state.update(menu='relatorios', rel_mode='produtos')
+    
+    if "RELATÓRIO DE RECARGAS" in perms:
+        if c6.button("RELATÓRIO DE RECARGAS", use_container_width=True): st.session_state.update(menu='rel_recargas')
+
     st.markdown("---")
     if "ADMINISTRADORES" in perms:
         if st.button("👥 ADMINISTRADORES", use_container_width=True): st.session_state.update(menu='acesso', acc_mode=None)
@@ -450,9 +590,10 @@ def menu_admin():
     menu=st.session_state.get('menu')
 
     if menu=='cadastro' and "CADASTRO" in perms:
-        st.markdown("---"); c1,c2=st.columns(2)
+        st.markdown("---"); c1,c2,c3=st.columns(3)
         if c1.button("📝 DADOS ALUNOS",use_container_width=True): st.session_state['sub']='user'
-        if c2.button("🍎 ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
+        if c2.button("📧 ENVIAR ACESSOS",use_container_width=True): st.session_state['sub']='acesso_alunos'
+        if c3.button("🍎 ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
         
         if st.session_state.get('sub')=='food':
             act=st.radio("Ação",["NOVO","ALTERAR","EXCLUIR"],horizontal=True); df=get_all_alimentos()
@@ -522,47 +663,47 @@ def menu_admin():
                     t=st.selectbox("Turma",sorted(df['turma'].dropna().unique()))
                     if st.button("🧨 APAGAR TURMA"): cnt=delete_turma_db(t); st.success(f"{cnt} excluídos."); st.rerun()
 
-    if menu == 'enviar_acessos' and "ENVIAR ACESSOS" in perms:
-        st.markdown("---"); st.subheader("🔑 Enviar Senhas para Alunos")
-        c1, c2, c3 = st.columns(3)
-        if c1.button("👤 POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
-        if c2.button("🏫 POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
-        if c3.button("📢 PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
-        df_alunos = get_all_alunos()
-        if st.session_state.get('acc_mode') == 'aluno':
-            if not df_alunos.empty:
-                df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
-                sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
-                id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
-                nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
-                email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
-                if st.button("GERAR E ENVIAR"):
-                    l, s = garantir_credenciais(id_sel, nome_sel)
-                    if email_sel:
-                        enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
-                    else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
-            else: st.warning("Sem alunos.")
-        elif st.session_state.get('acc_mode') == 'turma':
-            if not df_alunos.empty:
-                turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
-                if st.button(f"DISPARAR PARA {t_sel}"):
-                    alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
-                    for i, row in alunos_turma.iterrows():
-                        l, s = garantir_credenciais(row['id'], row['nome'])
-                        if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                        bar.progress((i + 1) / len(alunos_turma))
-                    st.success(f"Processo finalizado! {count} e-mails enviados.")
-            else: st.warning("Sem alunos.")
-        elif st.session_state.get('acc_mode') == 'todos':
-            st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
-            if st.button("CONFIRMAR ENVIO EM MASSA"):
+        if st.session_state.get('sub')=='acesso_alunos':
+            st.subheader("🔑 Enviar Senhas para Alunos")
+            c1, c2, c3 = st.columns(3)
+            if c1.button("👤 POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
+            if c2.button("🏫 POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
+            if c3.button("📢 PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
+            df_alunos = get_all_alunos()
+            if st.session_state.get('acc_mode') == 'aluno':
                 if not df_alunos.empty:
-                    count = 0; bar = st.progress(0)
-                    for i, row in df_alunos.iterrows():
-                        l, s = garantir_credenciais(row['id'], row['nome'])
-                        if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                        bar.progress((i + 1) / len(df_alunos))
-                    st.success(f"Envio concluído! {count} mensagens enviadas.")
+                    df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
+                    sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                    id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                    nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
+                    email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
+                    if st.button("GERAR E ENVIAR"):
+                        l, s = garantir_credenciais(id_sel, nome_sel)
+                        if email_sel:
+                            enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
+                        else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
+                else: st.warning("Sem alunos.")
+            elif st.session_state.get('acc_mode') == 'turma':
+                if not df_alunos.empty:
+                    turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
+                    if st.button(f"DISPARAR PARA {t_sel}"):
+                        alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
+                        for i, row in alunos_turma.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                            bar.progress((i + 1) / len(alunos_turma))
+                        st.success(f"Processo finalizado! {count} e-mails enviados.")
+                else: st.warning("Sem alunos.")
+            elif st.session_state.get('acc_mode') == 'todos':
+                st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
+                if st.button("CONFIRMAR ENVIO EM MASSA"):
+                    if not df_alunos.empty:
+                        count = 0; bar = st.progress(0)
+                        for i, row in df_alunos.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                            bar.progress((i + 1) / len(df_alunos))
+                        st.success(f"Envio concluído! {count} mensagens enviadas.")
 
     if menu == 'recarga' and "RECARGA" in perms:
         st.markdown("---"); st.subheader("💰 Recarga")
@@ -578,7 +719,9 @@ def menu_admin():
                 with st.form("rman"):
                     v=st.number_input("Valor R$",0.0,step=5.0); m=st.selectbox("Forma",["DINHEIRO", "PIX (MANUAL)", "DÉBITO", "CRÉDITO"])
                     if st.form_submit_button("CONFIRMAR"):
-                        registrar_recarga(id_a,v,m); disparar_alerta(id_a, "Recarga", v, f"Forma: {m}"); st.success("Sucesso!"); st.rerun()
+                        # PASSA USUÁRIO LOGADO
+                        registrar_recarga(id_a,v,m, usuario_logado=st.session_state['user_name'])
+                        disparar_alerta(id_a, "Recarga", v, f"Forma: {m}"); st.success("Sucesso!"); st.rerun()
             elif st.session_state.get('rec_mode')=='pix':
                 st.info("Gerar QR Code Estático")
                 v=st.number_input("Valor Pix",0.0,step=5.0)
@@ -588,7 +731,9 @@ def menu_admin():
                     with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
                     with c_txt: st.code(payload); st.warning("Confira o comprovante.")
                     if st.button("✅ CONFIRMAR PIX"):
-                        registrar_recarga(id_a, v, "PIX (QR)"); disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code"); st.success("Creditado!"); st.rerun()
+                        # PASSA USUÁRIO LOGADO MESMO SENDO PIX (Para saber quem validou)
+                        registrar_recarga(id_a, v, "PIX (QR)", usuario_logado=st.session_state['user_name'])
+                        disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code"); st.success("Creditado!"); st.rerun()
         else: st.warning("Sem alunos.")
 
     if menu == 'comprar' and "COMPRAR" in perms:
@@ -671,8 +816,8 @@ def menu_admin():
                 else: st.warning("Nenhuma venda encontrada.")
         else: st.warning("Sem alunos.")
 
-    if menu == 'relatorios' and "RELATÓRIOS" in perms:
-        st.markdown("---"); st.subheader("📊 Relatórios")
+    if menu == 'relatorios' and "RELATÓRIOS DE VENDAS" in perms:
+        st.markdown("---"); st.subheader("📊 Relatórios de Vendas")
         data_sel = st.date_input("Data:", datetime.now(), format="DD/MM/YYYY"); d_str = data_sel.strftime("%d/%m/%Y")
         st.write(f"Filtrando por: **{d_str}**"); st.markdown("---")
         turno_sel = st.radio("Turno:", ["DIA INTEIRO", "MATUTINO", "VESPERTINO"], horizontal=True); st.markdown("---")
@@ -718,6 +863,27 @@ def menu_admin():
                 criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
                 criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
             else: st.info("Nenhuma recarga.")
+            
+    if menu == 'rel_recargas' and "RELATÓRIO DE RECARGAS" in perms:
+        st.markdown("---"); st.subheader("💳 Relatório Detalhado de Recargas")
+        
+        filtro_tempo = st.radio("Período:", ["HOJE", "ÚLTIMOS 7 DIAS", "ÚLTIMOS 15 DIAS", "ÚLTIMOS 30 DIAS"], horizontal=True)
+        st.write(f"Exibindo recargas: **{filtro_tempo}**")
+        
+        df_recargas = get_relatorio_recargas_detalhado(filtro_tempo)
+        
+        if not df_recargas.empty:
+            # Calcula total
+            total_recargas = df_recargas['Valor'].sum()
+            st.metric("Total Recarregado", f"R$ {total_recargas:.2f}")
+            
+            st.dataframe(df_recargas, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
+            
+            c1, c2 = st.columns(2)
+            criar_botao_pdf_a4(df_recargas, f"RECARGAS ({filtro_tempo})")
+            criar_botao_pdf_termico(df_recargas, f"RECARGAS ({filtro_tempo})")
+        else:
+            st.info("Nenhuma recarga encontrada neste período.")
 
     if menu == 'acesso' and "ADMINISTRADORES" in perms:
         st.markdown("---"); st.subheader("🔑 Gestão de Administradores")
