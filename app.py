@@ -110,17 +110,14 @@ def init_db():
     
     conn.commit(); conn.close()
 
-# --- FUNÇÃO DE RESET DE ADMIN (NOVA) ---
+# --- FUNÇÃO DE RESET DE ADMIN ---
 def reset_admin_padrao():
     try:
         conn = sqlite3.connect(DB_FILE)
         c = conn.cursor()
-        # Apaga a tabela antiga que pode estar bugada
         c.execute("DROP TABLE IF EXISTS admins")
         conn.commit()
         conn.close()
-        
-        # Recria do zero
         init_db()
         return True
     except Exception as e:
@@ -130,33 +127,22 @@ def reset_admin_padrao():
 # --- FUNÇÕES DE LOGIN E CREDENCIAIS ---
 def verificar_login(usuario, senha):
     conn = sqlite3.connect(DB_FILE); c = conn.cursor()
-    
-    # Tenta como ADMIN
     try:
-        # Garante que a query só rode se a tabela existir
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admins'")
-        if c.fetchone():
-            c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
-            admin = c.fetchone()
-            if admin:
-                conn.close()
-                if admin[2] == 1: 
-                    perms = admin[3] if admin[3] else ""
-                    return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
-                else: return {'tipo': 'bloqueado'}
-    except Exception as e:
-        print(f"Erro SQL Admin: {e}")
+        c.execute("SELECT id, nome, ativo, permissoes FROM admins WHERE email = ? AND senha = ?", (usuario, senha))
+        admin = c.fetchone()
+        if admin:
+            conn.close()
+            if admin[2] == 1: 
+                perms = admin[3] if admin[3] else ""
+                return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': perms.split(',')}
+            else: return {'tipo': 'bloqueado'}
+    except Exception as e: print(f"Erro SQL Admin: {e}")
 
-    # Tenta como ALUNO
     try:
         c.execute("SELECT id, nome FROM alunos WHERE login = ? AND senha = ?", (usuario, senha))
-        aluno = c.fetchone()
-        conn.close()
+        aluno = c.fetchone(); conn.close()
         if aluno: return {'tipo': 'aluno', 'id': aluno[0], 'nome': aluno[1]}
-    except Exception as e:
-        print(f"Erro SQL Aluno: {e}")
-        conn.close()
-        
+    except Exception as e: print(f"Erro SQL Aluno: {e}"); conn.close()
     return None
 
 def gerar_senha_aleatoria(tamanho=6):
@@ -178,8 +164,7 @@ def garantir_credenciais(aluno_id, nome_aluno):
     except Exception as e:
         st.error(f"Erro ao gerar credenciais: {e}")
         return None, None
-    finally:
-        conn.close()
+    finally: conn.close()
 
 # --- CLASSES PDF (TÉRMICO E A4) ---
 class PDFTermico(FPDF):
@@ -482,7 +467,7 @@ def update_aluno_manual(id,n,s,t,tu,ns,em,t1,t2,t3,sl): conn=sqlite3.connect(DB_
 def delete_aluno_db(id): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE id=?",(id,)); conn.commit(); conn.close()
 def delete_turma_db(t): conn=sqlite3.connect(DB_FILE); c=conn.cursor(); c.execute("DELETE FROM alunos WHERE turma=?",(t,)); ct=c.rowcount; conn.commit(); conn.close(); return ct
 
-# --- FUNÇÃO DE VENDA (AGORA NO LUGAR CERTO, ANTES DOS MENUS) ---
+# --- FUNÇÃO DE VENDA ---
 def realizar_venda_form(aid, origin=None):
     conn=sqlite3.connect(DB_FILE); conn.row_factory=sqlite3.Row; c=conn.cursor(); c.execute("SELECT * FROM alunos WHERE id=?",(aid,)); al=c.fetchone(); conn.close()
     st.markdown(f"**{al['nome']}** | Saldo: R$ {al['saldo']:.2f}"); df=get_all_alimentos()
@@ -553,7 +538,6 @@ def login_screen():
             else:
                 st.error("❌ Usuário ou senha inválidos")
     
-    # BOTÃO DE SEGURANÇA PARA REPARAR O BANCO
     with st.expander("🆘 Problemas no acesso?"):
         st.write("Se não conseguir acessar com a senha padrão, clique abaixo para resetar a tabela de administradores.")
         if st.button("RESTAURAR ADMIN PADRÃO"):
@@ -630,9 +614,10 @@ def menu_admin():
     menu=st.session_state.get('menu')
 
     if menu=='cadastro' and "CADASTRO" in perms:
-        st.markdown("---"); c1,c2=st.columns(2)
-        if c1.button("USUÁRIO",use_container_width=True): st.session_state['sub']='user'
-        if c2.button("ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
+        st.markdown("---"); c1,c2,c3=st.columns(3)
+        if c1.button("📝 DADOS ALUNOS",use_container_width=True): st.session_state['sub']='user'
+        if c2.button("📧 ENVIAR ACESSOS",use_container_width=True): st.session_state['sub']='acesso_alunos'
+        if c3.button("🍎 ALIMENTOS",use_container_width=True): st.session_state['sub']='food'
         
         if st.session_state.get('sub')=='food':
             act=st.radio("Ação",["NOVO","ALTERAR","EXCLUIR"],horizontal=True); df=get_all_alimentos()
@@ -703,6 +688,48 @@ def menu_admin():
                 if not df.empty:
                     t=st.selectbox("Turma",sorted(df['turma'].dropna().unique()))
                     if st.button("🧨 APAGAR TURMA"): cnt=delete_turma_db(t); st.success(f"{cnt} excluídos."); st.rerun()
+
+        if st.session_state.get('sub')=='acesso_alunos':
+            st.subheader("🔑 Enviar Senhas para Alunos")
+            c1, c2, c3 = st.columns(3)
+            if c1.button("👤 POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
+            if c2.button("🏫 POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
+            if c3.button("📢 PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
+            df_alunos = get_all_alunos()
+            if st.session_state.get('acc_mode') == 'aluno':
+                if not df_alunos.empty:
+                    df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
+                    sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
+                    id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
+                    nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
+                    email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
+                    if st.button("GERAR E ENVIAR"):
+                        l, s = garantir_credenciais(id_sel, nome_sel)
+                        if email_sel:
+                            enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
+                        else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
+                else: st.warning("Sem alunos.")
+            elif st.session_state.get('acc_mode') == 'turma':
+                if not df_alunos.empty:
+                    turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
+                    if st.button(f"DISPARAR PARA {t_sel}"):
+                        alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
+                        for i, row in alunos_turma.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                            bar.progress((i + 1) / len(alunos_turma))
+                        st.success(f"Processo finalizado! {count} e-mails enviados.")
+                else: st.warning("Sem alunos.")
+            elif st.session_state.get('acc_mode') == 'todos':
+                st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
+                if st.button("CONFIRMAR ENVIO EM MASSA"):
+                    if not df_alunos.empty:
+                        count = 0; bar = st.progress(0)
+                        for i, row in df_alunos.iterrows():
+                            l, s = garantir_credenciais(row['id'], row['nome'])
+                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
+                            bar.progress((i + 1) / len(df_alunos))
+                        st.success(f"Envio concluído! {count} mensagens enviadas.")
 
     if menu == 'recarga' and "RECARGA" in perms:
         st.markdown("---"); st.subheader("💰 Recarga")
@@ -860,71 +887,28 @@ def menu_admin():
             else: st.info("Nenhuma recarga.")
 
     if menu == 'acesso' and "ACESSO & ADMIN" in perms:
-        st.markdown("---"); st.subheader("🔑 Gestão de Acessos")
-        tab_alunos, tab_admins = st.tabs(["🎓 Alunos", "👔 Administradores"])
-        with tab_alunos:
-            c1, c2, c3 = st.columns(3)
-            if c1.button("👤 ENVIAR POR ALUNO", use_container_width=True): st.session_state['acc_mode'] = 'aluno'
-            if c2.button("🏫 ENVIAR POR TURMA", use_container_width=True): st.session_state['acc_mode'] = 'turma'
-            if c3.button("📢 ENVIAR PARA TODOS", use_container_width=True): st.session_state['acc_mode'] = 'todos'
-            df_alunos = get_all_alunos()
-            if st.session_state.get('acc_mode') == 'aluno':
-                if not df_alunos.empty:
-                    df_alunos['lbl'] = df_alunos['nome'] + " | " + df_alunos['turma'].astype(str)
-                    sel = st.selectbox("Selecione o Aluno:", df_alunos['lbl'].unique())
-                    id_sel = int(df_alunos[df_alunos['lbl'] == sel].iloc[0]['id'])
-                    nome_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['nome']
-                    email_sel = df_alunos[df_alunos['lbl'] == sel].iloc[0]['email']
-                    if st.button("GERAR E ENVIAR"):
-                        l, s = garantir_credenciais(id_sel, nome_sel)
-                        if email_sel:
-                            enviar_credenciais_thread(email_sel, nome_sel, l, s); st.success(f"Enviado para {email_sel}!"); st.info(f"Login: {l} | Senha: {s}")
-                        else: st.warning("Sem e-mail cadastrado."); st.info(f"Login: {l} | Senha: {s}")
-                else: st.warning("Sem alunos.")
-            elif st.session_state.get('acc_mode') == 'turma':
-                if not df_alunos.empty:
-                    turmas = sorted(df_alunos['turma'].dropna().unique()); t_sel = st.selectbox("Selecione a Turma:", turmas)
-                    if st.button(f"DISPARAR PARA {t_sel}"):
-                        alunos_turma = df_alunos[df_alunos['turma'] == t_sel]; count = 0; bar = st.progress(0)
-                        for i, row in alunos_turma.iterrows():
-                            l, s = garantir_credenciais(row['id'], row['nome'])
-                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                            bar.progress((i + 1) / len(alunos_turma))
-                        st.success(f"Processo finalizado! {count} e-mails enviados.")
-                else: st.warning("Sem alunos.")
-            elif st.session_state.get('acc_mode') == 'todos':
-                st.warning("⚠️ Atenção: Isso enviará e-mails para TODOS os alunos.")
-                if st.button("CONFIRMAR ENVIO EM MASSA"):
-                    if not df_alunos.empty:
-                        count = 0; bar = st.progress(0)
-                        for i, row in df_alunos.iterrows():
-                            l, s = garantir_credenciais(row['id'], row['nome'])
-                            if row['email']: enviar_credenciais_thread(row['email'], row['nome'], l, s); count += 1
-                            bar.progress((i + 1) / len(df_alunos))
-                        st.success(f"Envio concluído! {count} mensagens enviadas.")
-        
-        with tab_admins:
-            st.subheader("Cadastrar Novo Admin")
-            with st.form("novo_admin"):
-                nome_adm = st.text_input("Nome"); email_adm = st.text_input("E-mail (Login)"); senha_adm = st.text_input("Senha", type="password")
-                st.write("**Permissões de Acesso:**")
-                perms_selecionadas = st.multiselect("Selecione os módulos:", LISTA_PERMISSOES, default=LISTA_PERMISSOES)
-                if st.form_submit_button("CRIAR ADMIN"):
-                    if criar_admin(email_adm, senha_adm, nome_adm, perms_selecionadas): st.success("Criado com sucesso!")
-                    else: st.error("Erro: E-mail já existe.")
-            st.subheader("Gerenciar Admins")
-            df_admins = get_all_admins()
-            for index, row in df_admins.iterrows():
-                c1, c2, c3 = st.columns([2, 2, 1])
-                c1.write(f"**{row['nome']}** ({row['email']})")
-                status = "Ativo" if row['ativo'] == 1 else "Bloqueado"
-                c2.write(status)
-                if row['email'] != 'admin': 
-                    btn_label = "Bloquear" if row['ativo'] == 1 else "Ativar"
-                    if c3.button(btn_label, key=f"adm_{row['id']}"):
-                        novo_status = 0 if row['ativo'] == 1 else 1; toggle_admin_status(row['id'], novo_status); st.rerun()
-                with st.expander(f"Ver permissões de {row['nome']}"):
-                    st.write(row['permissoes'].replace(",", " | ") if row['permissoes'] else "Nenhuma")
+        st.markdown("---"); st.subheader("🔑 Gestão de Administradores")
+        st.subheader("Cadastrar Novo Admin")
+        with st.form("novo_admin"):
+            nome_adm = st.text_input("Nome"); email_adm = st.text_input("E-mail (Login)"); senha_adm = st.text_input("Senha", type="password")
+            st.write("**Permissões de Acesso:**")
+            perms_selecionadas = st.multiselect("Selecione os módulos:", LISTA_PERMISSOES, default=LISTA_PERMISSOES)
+            if st.form_submit_button("CRIAR ADMIN"):
+                if criar_admin(email_adm, senha_adm, nome_adm, perms_selecionadas): st.success("Criado com sucesso!")
+                else: st.error("Erro: E-mail já existe.")
+        st.subheader("Gerenciar Admins")
+        df_admins = get_all_admins()
+        for index, row in df_admins.iterrows():
+            c1, c2, c3 = st.columns([2, 2, 1])
+            c1.write(f"**{row['nome']}** ({row['email']})")
+            status = "Ativo" if row['ativo'] == 1 else "Bloqueado"
+            c2.write(status)
+            if row['email'] != 'admin': 
+                btn_label = "Bloquear" if row['ativo'] == 1 else "Ativar"
+                if c3.button(btn_label, key=f"adm_{row['id']}"):
+                    novo_status = 0 if row['ativo'] == 1 else 1; toggle_admin_status(row['id'], novo_status); st.rerun()
+            with st.expander(f"Ver permissões de {row['nome']}"):
+                st.write(row['permissoes'].replace(",", " | ") if row['permissoes'] else "Nenhuma")
 
 if st.session_state['logado']:
     if st.session_state['user_type'] == 'admin': menu_admin()
