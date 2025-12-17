@@ -79,16 +79,18 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS transacoes (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, itens TEXT, valor_total REAL, data_hora TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS recargas (id INTEGER PRIMARY KEY AUTOINCREMENT, aluno_id INTEGER, valor REAL, data_hora TEXT, metodo_pagamento TEXT, nsu TEXT)''')
     
-    # NOVAS COLUNAS RECARGAS
     if not check_column_exists(c, 'recargas', 'metodo_pagamento'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN metodo_pagamento TEXT")
         except: pass
     if not check_column_exists(c, 'recargas', 'nsu'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN nsu TEXT")
         except: pass
-    if not check_column_exists(c, 'recargas', 'realizado_por'): # <--- NOVA COLUNA PARA AUDITORIA
+    if not check_column_exists(c, 'recargas', 'realizado_por'):
         try: c.execute("ALTER TABLE recargas ADD COLUMN realizado_por TEXT")
         except: pass
+
+    # 5. Tabela de Controle de Envios Automáticos (NOVO)
+    c.execute('''CREATE TABLE IF NOT EXISTS controle_envios (data_envio TEXT PRIMARY KEY, status TEXT)''')
     
     conn.commit(); conn.close()
 
@@ -110,7 +112,6 @@ def verificar_login(usuario, senha):
             conn.close()
             if admin[2] == 1: 
                 perms = admin[3] if admin[3] else ""
-                # Compatibilidade
                 lista_perms = perms.split(',')
                 if "RELATÓRIOS" in lista_perms: lista_perms.append("RELATÓRIOS DE VENDAS")
                 return {'tipo': 'admin', 'id': admin[0], 'nome': admin[1], 'perms': lista_perms}
@@ -267,6 +268,74 @@ def disparar_alerta(aluno_id, tipo, valor, detalhes):
                 threading.Thread(target=enviar_email_brevo_thread, args=(email, nome, f"🔔 Cantina: {tipo} R$ {valor:.2f}", msg)).start()
     except: pass
 
+# --- AUTOMAÇÃO: EMAIL SALDO BAIXO ---
+def verificar_saldo_baixo_e_enviar():
+    """Roda diariamente às 06:00 de Manaus, Seg-Sex"""
+    agora = agora_manaus()
+    hoje_str = agora.strftime("%Y-%m-%d")
+    
+    # Verifica dia da semana (0=Segunda, 4=Sexta)
+    if agora.weekday() > 4: 
+        return
+    
+    # Verifica horário (A partir de 06:00 e antes das 07:00)
+    if not (6 <= agora.hour < 7):
+        return
+
+    # Verifica se já enviou hoje
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT status FROM controle_envios WHERE data_envio = ?", (hoje_str,))
+    if c.fetchone():
+        conn.close()
+        return # Já enviado hoje
+
+    # Lógica de Envio
+    try:
+        c.execute("SELECT nome, email, saldo FROM alunos WHERE saldo <= 10.00 AND email IS NOT NULL AND email != ''")
+        alunos_baixo_saldo = c.fetchall()
+        
+        for nome, email, saldo in alunos_baixo_saldo:
+            if "@" in str(email):
+                assunto = "⚠️ Aviso de Saldo Baixo - Cantina Peixinho Dourado"
+                msg_html = f"""
+                <html><body>
+                    <h3>Olá, responsável por {nome}!</h3>
+                    <p>Lembramos que o saldo do aluno <b>{nome}</b> no Sistema da Cantina Escolar é de <b style="color:red">R$ {saldo:.2f}</b>.</p>
+                    <p>Para evitar bloqueio nas compras, acesse o sistema e realize a recarga via Pix.</p>
+                    <hr>
+                    <p style='font-size:12px; color:gray'>Cantina Peixinho Dourado</p>
+                </body></html>
+                """
+                # Envia sem thread para garantir que o script não morra antes
+                enviar_email_brevo_thread(email, nome, assunto, msg_html)
+                time.sleep(0.2) # Pausa leve para não estourar API
+
+        # Registra envio
+        c.execute("INSERT INTO controle_envios (data_envio, status) VALUES (?, ?)", (hoje_str, "ENVIADO"))
+        conn.commit()
+        print(f"E-mails de saldo baixo enviados em {hoje_str}")
+    except Exception as e:
+        print(f"Erro no envio automatico: {e}")
+    finally:
+        conn.close()
+
+# Inicia a thread de verificação em background (Singleton)
+@st.cache_resource
+def start_scheduler():
+    def scheduler_loop():
+        while True:
+            try:
+                verificar_saldo_baixo_e_enviar()
+                time.sleep(60) # Verifica a cada minuto
+            except:
+                time.sleep(60)
+                
+    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t.start()
+
+start_scheduler() # Inicia o robô
+
 # --- PIX ---
 class PixPayload:
     def __init__(self, c, n, ci, v, t="***"): self.c,self.n,self.ci,self.v,self.t=c,n,ci,f"{v:.2f}",t
@@ -345,6 +414,38 @@ def validar_horario_turno(data_hora_str, turno):
     return False
 
 # --- RELATORIOS ---
+def get_relatorio_alunos_dia(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        query = "SELECT a.nome, t.itens, t.valor_total, t.data_hora FROM transacoes t JOIN alunos a ON t.aluno_id=a.id WHERE t.data_hora LIKE ? ORDER BY t.data_hora ASC"
+        df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
+        if not df.empty:
+            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
+            df = df[['Hora', 'nome', 'itens', 'valor_total']]
+            df.columns = ['Hora', 'Aluno', 'Produtos', 'Valor']
+            total_row = pd.DataFrame([{'Hora': '', 'Aluno': 'TOTAL GERAL', 'Produtos': '', 'Valor': df['Valor'].sum()}])
+            df = pd.concat([df, total_row], ignore_index=True)
+            return df
+    except: pass
+    finally: conn.close()
+    return pd.DataFrame()
+
+def get_relatorio_recargas_dia(data_filtro):
+    conn = sqlite3.connect(DB_FILE)
+    try:
+        query = "SELECT r.data_hora, a.nome, r.metodo_pagamento, r.valor FROM recargas r JOIN alunos a ON r.aluno_id = a.id WHERE r.data_hora LIKE ? ORDER BY r.data_hora ASC"
+        df = pd.read_sql_query(query, conn, params=(f"{data_filtro}%",))
+        if not df.empty:
+            df['Hora'] = df['data_hora'].apply(lambda x: x.split(' ')[1])
+            df = df[['Hora', 'nome', 'metodo_pagamento', 'valor']]
+            df.columns = ['Hora', 'Aluno', 'Método', 'Valor']
+            total_row = pd.DataFrame([{'Hora': '', 'Aluno': 'TOTAL DO DIA', 'Método': '', 'Valor': df['Valor'].sum()}])
+            df = pd.concat([df, total_row], ignore_index=True)
+            return df
+    except: pass
+    finally: conn.close()
+    return pd.DataFrame()
+
 def get_extrato_aluno(aid, filtro):
     conn=sqlite3.connect(DB_FILE); c=conn.cursor()
     c.execute("SELECT data_hora,itens,valor_total FROM transacoes WHERE aluno_id=?",(aid,)); v=c.fetchall()
@@ -824,7 +925,8 @@ def menu_admin():
         c1, c2, c3 = st.columns(3)
         if c1.button("📦 PRODUTOS", use_container_width=True): st.session_state['rel_mode'] = 'produtos'
         if c2.button("👥 ALUNOS", use_container_width=True): st.session_state['rel_mode'] = 'alunos'
-        if c3.button("💰 RECARGAS", use_container_width=True): st.session_state['rel_mode'] = 'recargas'
+        
+        # REMOVIDO BOTÃO DE RECARGAS DAQUI COMO SOLICITADO
 
         if st.session_state.get('rel_mode') == 'produtos':
             vis_mode = st.radio("Modo de Visualização:", ["VISÃO GERAL (TOTAL)", "DETALHADO POR TURMA"], horizontal=True)
@@ -855,14 +957,6 @@ def menu_admin():
                 criar_botao_pdf_a4(df_a, "RELATORIO ALUNOS")
                 criar_botao_pdf_termico(df_a, "RELATORIO ALUNOS")
             else: st.info("Nada vendido.")
-        elif st.session_state.get('rel_mode') == 'recargas':
-            df_r = get_relatorio_recargas_dia(d_str)
-            if not df_r.empty:
-                st.dataframe(df_r, column_config={"Valor": st.column_config.NumberColumn(format="R$ %.2f")}, hide_index=True, use_container_width=True)
-                c1, c2 = st.columns(2)
-                criar_botao_pdf_a4(df_r, "RELATORIO RECARGAS")
-                criar_botao_pdf_termico(df_r, "RELATORIO RECARGAS")
-            else: st.info("Nenhuma recarga.")
             
     if menu == 'rel_recargas' and "RELATÓRIO DE RECARGAS" in perms:
         st.markdown("---"); st.subheader("💳 Relatório Detalhado de Recargas")
