@@ -11,6 +11,7 @@ import streamlit.components.v1 as components
 import random
 import string
 import pytz
+import mercadopago  # <--- NOVA IMPORTAÇÃO
 from datetime import datetime, timedelta, date
 from collections import Counter
 from fpdf import FPDF
@@ -26,9 +27,12 @@ BREVO_API_KEY = "xkeysib-380a4fab4b0735c31eca26e64bd4df17b9c4fea5dbc938ce124f3b9
 EMAIL_REMETENTE = "cantina@peixinhodourado.g12.br" 
 NOME_REMETENTE = "Cantina Peixinho Dourado"
 CHAVE_PIX_ESCOLA = "flaviovilhena@gmail.com" 
-NOME_BENEFICIARIO = "FLAVIO SILVA"
-CIDADE_BENEFICIARIO = "MANAUS" 
 DB_FILE = 'cantina.db'
+
+# --- CONFIGURAÇÃO MERCADO PAGO ---
+# ⚠️ IMPORTANTE: SUBSTITUA PELO SEU ACCESS TOKEN DE PRODUÇÃO
+MP_ACCESS_TOKEN = "SEU_ACCESS_TOKEN_AQUI" 
+sdk_mp = mercadopago.SDK(MP_ACCESS_TOKEN)
 
 # LISTA ATUALIZADA DE MODULOS
 LISTA_PERMISSOES = ["CADASTRO", "COMPRAR", "SALDO", "RECARGA", "CANCELAR VENDA", "RELATÓRIOS DE VENDAS", "RELATÓRIO DE RECARGAS", "ENVIAR ACESSOS", "ADMINISTRADORES"]
@@ -144,6 +148,41 @@ def garantir_credenciais(aluno_id, nome_aluno):
         conn.commit(); return login_novo, senha_nova
     except: return None, None
     finally: conn.close()
+
+# --- FUNÇÕES MERCADO PAGO (NOVO) ---
+def gerar_pix_mercadopago(valor, email_pagador, nome_aluno):
+    payment_data = {
+        "transaction_amount": float(valor),
+        "description": f"Recarga Cantina - {nome_aluno}",
+        "payment_method_id": "pix",
+        "payer": {
+            "email": email_pagador,
+            "first_name": nome_aluno.split()[0],
+            "last_name": "Aluno"
+        }
+    }
+    try:
+        result = sdk_mp.payment().create(payment_data)
+        if result["status"] == 201:
+            response = result["response"]
+            qr_code = response['point_of_interaction']['transaction_data']['qr_code']
+            qr_code_base64 = response['point_of_interaction']['transaction_data']['qr_code_base64']
+            payment_id = response['id']
+            return payment_id, qr_code, qr_code_base64
+    except Exception as e:
+        st.error(f"Erro MP: {e}")
+    return None, None, None
+
+def verificar_status_pagamento(payment_id):
+    try:
+        if not payment_id: return False
+        result = sdk_mp.payment().get(payment_id)
+        if result["status"] == 200:
+            status = result["response"]["status"]
+            return status == "approved"
+    except:
+        pass
+    return False
 
 # --- PDF ---
 class PDFTermico(FPDF):
@@ -296,20 +335,6 @@ def start_scheduler():
             except: time.sleep(60)
     threading.Thread(target=loop, daemon=True).start()
 start_scheduler()
-
-# --- PIX ---
-class PixPayload:
-    def __init__(self, c, n, ci, v, t="***"): self.c,self.n,self.ci,self.v,self.t=c,n,ci,f"{v:.2f}",t
-    def _f(self,i,v): return f"{i}{len(v):02}{v}"
-    def _crc(self,p):
-        c=0xFFFF; pl=0x1021
-        for b in p.encode("utf-8"):
-            c^=(b<<8); 
-            for _ in range(8): c=(c<<1)^pl if c&0x8000 else c<<1
-            c&=0xFFFF
-        return f"{c:04X}"
-    def gerar_payload(self):
-        p=self._f("00","01")+self._f("26",self._f("00","BR.GOV.BCB.PIX")+self._f("01",self.c))+self._f("52","0000")+self._f("53","986")+self._f("54",self.v)+self._f("58","BR")+self._f("59",self.n)+self._f("60",self.ci)+self._f("62",self._f("05",self.t))+"6304"; return p+self._crc(p)
 
 # --- DB LEITURA ---
 def get_all_alunos(): conn=sqlite3.connect(DB_FILE); df=pd.read_sql_query("SELECT * FROM alunos",conn) if sqlite3.connect(DB_FILE) else pd.DataFrame(); conn.close(); return df
@@ -492,7 +517,7 @@ def get_relatorio_recargas_detalhado(filtro_tempo):
                 dc_naive = dc.replace(tzinfo=None)
                 if dt_obj < dc_naive: continue
             
-            if metodo == "PIX (QR)":
+            if metodo == "PIX (QR)" or metodo == "PIX (MP)" or metodo == "PIX (AUTOMÁTICO)":
                 origem = "BANCO (Pix Automático)"
             else:
                 quem = realizado_por if realizado_por else "Sistema"
@@ -772,11 +797,13 @@ def menu_admin():
         st.markdown("---"); st.subheader("💰 Recarga")
         c1,c2=st.columns(2)
         if c1.button("📝 RECEBIMENTO MANUAL",use_container_width=True): st.session_state['rec_mode']='manual'; st.session_state['pix_data']=None
-        if c2.button("💠 PIX (QR CODE)",use_container_width=True): st.session_state['rec_mode']='pix'; st.session_state['pix_data']=None
+        if c2.button("💠 PIX AUTOMÁTICO (MP)",use_container_width=True): st.session_state['rec_mode']='pix'; st.session_state['pix_data']=None
 
         df=get_all_alunos()
         if not df.empty:
             df=df.sort_values('nome'); df['l']=df['nome']+" | "+df['turma']; s=st.selectbox("Aluno",df['l'].unique()); id_a=int(df[df['l']==s].iloc[0]['id'])
+            
+            # --- MODO MANUAL (DINHEIRO/CARTÃO) ---
             if st.session_state.get('rec_mode')=='manual':
                 st.info("Recarga Manual")
                 with st.form("rman"):
@@ -784,17 +811,94 @@ def menu_admin():
                     if st.form_submit_button("CONFIRMAR"):
                         registrar_recarga(id_a,v,m, usuario_logado=st.session_state['user_name'])
                         disparar_alerta(id_a, "Recarga", v, f"Forma: {m}"); st.success("Sucesso!"); st.rerun()
+            
+            # --- MODO PIX AUTOMÁTICO (MERCADO PAGO) ---
             elif st.session_state.get('rec_mode')=='pix':
-                st.info("Gerar QR Code Estático")
-                v=st.number_input("Valor Pix",0.0,step=5.0)
-                if v>0:
-                    pix = PixPayload(CHAVE_PIX_ESCOLA, NOME_BENEFICIARIO, CIDADE_BENEFICIARIO, v); payload = pix.gerar_payload()
-                    st.markdown("---"); c_qr, c_txt = st.columns([1, 2])
-                    with c_qr: st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=200x200&data={payload}", caption="Ler no App do Banco")
-                    with c_txt: st.code(payload); st.warning("Confira o comprovante.")
-                    if st.button("✅ CONFIRMAR PIX"):
-                        registrar_recarga(id_a, v, "PIX (QR)", usuario_logado=st.session_state['user_name'])
-                        disparar_alerta(id_a, "Recarga Pix", v, "Via QR Code"); st.success("Creditado!"); st.rerun()
+                st.info("💠 Pix Automático (Mercado Pago)")
+                
+                # Input de valor
+                valor_input = st.number_input("Valor da Recarga (R$)", 0.0, step=5.0)
+
+                # Se não tiver pagamento em andamento na sessão, inicializa
+                if 'mp_payment_id' not in st.session_state:
+                    st.session_state['mp_payment_id'] = None
+                
+                # FASE 1: GERAR O QR CODE
+                if st.session_state['mp_payment_id'] is None:
+                    if st.button("GERAR QR CODE PIX") and valor_input > 0:
+                        # Busca e-mail do aluno
+                        conn = sqlite3.connect(DB_FILE); cx = conn.cursor()
+                        cx.execute("SELECT email, nome FROM alunos WHERE id=?", (id_a,))
+                        dados_aluno = cx.fetchone()
+                        conn.close()
+                        
+                        email_pag = dados_aluno[0] if dados_aluno and dados_aluno[0] and "@" in dados_aluno[0] else "cliente@cantina.com"
+                        nome_pag = dados_aluno[1]
+
+                        # Chama API Mercado Pago
+                        pid, qr, qr_img = gerar_pix_mercadopago(valor_input, email_pag, nome_pag)
+                        
+                        if pid:
+                            # Salva na sessão
+                            st.session_state['mp_payment_id'] = pid
+                            st.session_state['mp_qr_code'] = qr
+                            st.session_state['mp_qr_base64'] = qr_img
+                            st.session_state['mp_valor'] = valor_input
+                            st.rerun()
+                
+                # FASE 2: MOSTRAR QR E AGUARDAR PAGAMENTO
+                else:
+                    st.markdown("---")
+                    col_qr, col_info = st.columns([1, 2])
+                    
+                    with col_qr:
+                        # QR Code Visual
+                        st.image(f"https://api.qrserver.com/v1/create-qr-code/?size=250x250&data={st.session_state['mp_qr_code']}", caption="Escaneie no App do Banco")
+                    
+                    with col_info:
+                        st.subheader(f"Valor: R$ {st.session_state['mp_valor']:.2f}")
+                        st.warning("⏳ Aguardando confirmação do banco...")
+                        
+                        # Copia e Cola
+                        st.text_area("Copia e Cola", st.session_state['mp_qr_code'], height=70)
+                        
+                        c_check, c_cancel = st.columns(2)
+                        check = c_check.button("🔄 VERIFICAR PAGAMENTO", type="primary")
+                        cancelar = c_cancel.button("❌ CANCELAR")
+
+                        # Lógica de verificação
+                        aprovado = False
+                        
+                        if check:
+                            if verificar_status_pagamento(st.session_state['mp_payment_id']):
+                                aprovado = True
+                            else:
+                                st.toast("Ainda pendente. Aguarde alguns segundos e tente novamente.")
+                        
+                        # Se aprovado, finaliza a recarga
+                        if aprovado:
+                            registrar_recarga(
+                                id_a, 
+                                st.session_state['mp_valor'], 
+                                "PIX (MP)", 
+                                usuario_logado=st.session_state['user_name'],
+                                nsu=str(st.session_state['mp_payment_id']) 
+                            )
+                            # Envia e-mail
+                            disparar_alerta(id_a, "Recarga Pix", st.session_state['mp_valor'], "Confirmado via Mercado Pago")
+                            
+                            st.success("✅ PAGAMENTO CONFIRMADO!")
+                            st.balloons()
+                            
+                            # Limpa sessão
+                            st.session_state['mp_payment_id'] = None
+                            st.session_state['mp_qr_code'] = None
+                            time.sleep(3)
+                            st.rerun()
+
+                        if cancelar:
+                            st.session_state['mp_payment_id'] = None
+                            st.rerun()
         else: st.warning("Sem alunos.")
 
     if menu == 'comprar' and "COMPRAR" in perms:
