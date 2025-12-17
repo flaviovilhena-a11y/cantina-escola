@@ -690,6 +690,14 @@ def realizar_venda_form(aid, origin=None):
             if origin == 'turma': st.session_state['aid_venda'] = None
             st.rerun()
 
+# --- HELPER LIMPEZA ---
+def limpar_texto(texto):
+    if not isinstance(texto, str): return str(texto) if texto else ""
+    t = texto.upper()
+    t = t.replace('º', 'o').replace('°', 'o').replace('ª', 'a')
+    t = t.replace('1Ø', '1o') # Corrige erro de encoding especifico
+    return t.strip()
+
 # --- MENUS DE INTERFACE ---
 if 'logado' not in st.session_state: st.session_state['logado'] = False
 if 'user_type' not in st.session_state: st.session_state['user_type'] = None
@@ -824,46 +832,69 @@ def menu_admin():
 
         if st.session_state.get('sub')=='user':
             act=st.radio("Ação",["IMPORTAR CSV","NOVO ALUNO","ATUALIZAR","EXCLUIR ALUNO","EXCLUIR TURMA"])
-            
-            # --- IMPORTAR CSV MELHORADO ---
             if act=="IMPORTAR CSV":
                 u=st.file_uploader("CSV",type=['csv'])
                 if u and st.button("ENVIAR"):
                     try:
-                        df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
-                        # Limpa nomes das colunas
-                        # df.columns = [c.strip() for c in df.columns]
+                        # Tenta ler com diferentes encodings se falhar
+                        try:
+                            df=pd.read_csv(u,sep=None,engine='python',encoding='utf-8')
+                        except:
+                            u.seek(0)
+                            df=pd.read_csv(u,sep=None,engine='python',encoding='latin1')
                         
-                        n,a,b=0,0,st.progress(0)
+                        # Normaliza colunas para evitar erros de case (Nome vs NOME)
+                        df.columns = [c.strip().upper() for c in df.columns]
+                        
+                        # Helper para buscar colunas de forma flexível
+                        def get_val(row, possibilities):
+                            for p in possibilities:
+                                if p.upper() in row:
+                                    return row[p.upper()]
+                            return ""
+
+                        n_count, a_count, b = 0, 0, st.progress(0)
                         
                         for i, r in df.iterrows():
-                            # Mapeamento flexível de colunas
-                            nome = r.get('Aluno') or r.get('Nome') or ""
-                            turma = r.get('Turma') or ""
-                            serie = r.get('Serie') or r.get('Série') or ""
-                            turno = r.get('Turno') or ""
-                            email = r.get('Email') or r.get('E-mail') or ""
-                            tel1 = r.get('Telefone1') or r.get('Telefone') or r.get('Tel') or ""
-                            tel2 = r.get('Telefone2') or ""
-                            tel3 = r.get('Telefone3') or ""
+                            # Mapeamento Flexível
+                            nome = get_val(r, ['ALUNO', 'NOME', 'NOME COMPLETO'])
+                            turma = limpar_texto(get_val(r, ['TURMA', 'CLASSE']))
+                            serie = limpar_texto(get_val(r, ['SERIE', 'SÉRIE', 'ANO']))
+                            turno = limpar_texto(get_val(r, ['TURNO', 'PERIODO']))
+                            email = get_val(r, ['EMAIL', 'E-MAIL', 'CORREIO'])
                             
+                            tel1 = get_val(r, ['TELEFONE 1', 'TEL 1', 'TELEFONE', 'CELULAR', 'CONTATO'])
+                            tel2 = get_val(r, ['TELEFONE 2', 'TEL 2', 'CELULAR 2'])
+                            tel3 = get_val(r, ['TELEFONE 3', 'TEL 3'])
+                            
+                            # Data de Nascimento (Tenta formatar)
+                            nasc_raw = get_val(r, ['NASCIMENTO', 'DATA DE NASCIMENTO', 'DN', 'NASC'])
+                            nasc_fmt = None
+                            if nasc_raw:
+                                try:
+                                    # Se vier como datetime do pandas
+                                    if isinstance(nasc_raw, (pd.Timestamp, datetime, date)):
+                                        nasc_fmt = nasc_raw.strftime("%d/%m/%Y")
+                                    else:
+                                        nasc_fmt = str(nasc_raw).split(" ")[0] # Remove hora se tiver
+                                except: nasc_fmt = str(nasc_raw)
+
                             # Tratamento de Saldo
-                            saldo_raw = r.get('Saldo') or 0.0
+                            saldo_raw = get_val(r, ['SALDO', 'CREDITO'])
                             try:
                                 if isinstance(saldo_raw, str):
-                                    saldo = float(saldo_raw.replace(',', '.'))
+                                    saldo = float(saldo_raw.replace('R$', '').replace(',', '.'))
                                 else:
-                                    saldo = float(saldo_raw)
+                                    saldo = float(saldo_raw) if saldo_raw else 0.0
                             except: saldo = 0.0
                             
-                            # Chama a função que insere ou atualiza TUDO
                             if nome:
-                                upsert_aluno(str(nome), str(serie), str(turma), str(turno), None, str(email), str(tel1), str(tel2), str(tel3), saldo)
+                                upsert_aluno(str(nome), str(serie), str(turma), str(turno), nasc_fmt, str(email), str(tel1), str(tel2), str(tel3), saldo)
                             
                             b.progress((i+1)/len(df))
                             
                         st.success("Importação concluída! Dados atualizados.")
-                    except Exception as e: st.error(f"Erro: {e}")
+                    except Exception as e: st.error(f"Erro na importação: {e}")
                     
             elif act=="NOVO ALUNO":
                 with st.form("nal"):
